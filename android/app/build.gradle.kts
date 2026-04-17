@@ -20,6 +20,38 @@ val geminiApiKey: String = run {
     fromFile ?: System.getenv("GEMINI_API_KEY") ?: ""
 }
 
+// Version SoT: android/version.properties. See that file for the rationale.
+// versionCode is derived from GITHUB_RUN_NUMBER on CI to guarantee monotonic increase
+// across builds; otherwise every Firebase-distributed APK would share versionCode=1
+// and Android would refuse the install as "same version".
+val versionProps: Properties = Properties().apply {
+    val file = rootProject.file("version.properties")
+    // Fail-fast: the file is the single Source of Truth for app version. A silent
+    // default here would mask a missing/renamed file and ship builds with surprise
+    // versionName/versionCode values.
+    require(file.exists()) {
+        "android/version.properties is missing — it is the SoT for app version. See android/SETUP.md §4.1."
+    }
+    file.inputStream().use { load(it) }
+}
+val resolvedVersionName: String =
+    versionProps.getProperty("versionName")?.takeIf { it.isNotBlank() }
+        ?: error("version.properties: 'versionName' must be set (e.g. versionName=0.1.0)")
+val versionCodeOffset: Int = versionProps.getProperty("versionCodeOffset", "0").toIntOrNull()
+    ?: error("version.properties: 'versionCodeOffset' must be a non-negative integer")
+val ciRunNumber: Int = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
+val resolvedVersionCode: Int = if (ciRunNumber > 0) {
+    versionCodeOffset + ciRunNumber
+} else {
+    // Local / non-CI builds: offset + 1 so fresh installs still have versionCode >= 1.
+    versionCodeOffset + 1
+}
+// Android/Play Store reject versionCode > 2_100_000_000. A misconfigured offset could
+// silently produce an unshippable APK — catch that at configuration time.
+require(resolvedVersionCode in 1..2_100_000_000) {
+    "Resolved versionCode=$resolvedVersionCode is out of range (1..2_100_000_000). Check version.properties versionCodeOffset."
+}
+
 android {
     namespace = "com.tsunaguba.corechat"
     compileSdk = 35
@@ -31,13 +63,31 @@ android {
         // handles runtime availability and falls back to cloud when unsupported.
         minSdk = 31
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = resolvedVersionCode
+        versionName = resolvedVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
 
         buildConfigField("String", "GEMINI_API_KEY", "\"${geminiApiKey}\"")
+    }
+
+    // Stamp the version + buildType into the APK filename so Firebase-distributed
+    // downloads don't collide on disk ("corechat-v0.1.0-42-debug.apk" instead of
+    // the old "app-debug.apk"). Without this, repeat downloads get "(1)", "(2)"
+    // suffixes from the browser and testers can't tell which build they are running.
+    //
+    // Note: `variant.versionName` here is the BASE value from defaultConfig and
+    // does NOT include `versionNameSuffix = "-debug"`. The suffix is applied to
+    // the manifest at merge time; we rely on the explicit `buildType.name` segment
+    // in the filename to disambiguate debug vs release APKs.
+    applicationVariants.all {
+        val variant = this
+        outputs.all {
+            val impl = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            impl.outputFileName =
+                "corechat-v${variant.versionName}-${variant.versionCode}-${variant.buildType.name}.apk"
+        }
     }
 
     buildTypes {
