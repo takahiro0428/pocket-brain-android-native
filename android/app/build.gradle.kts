@@ -43,7 +43,10 @@ android {
     buildTypes {
         debug {
             isMinifyEnabled = false
-            applicationIdSuffix = ".debug"
+            // Intentionally no applicationIdSuffix: Firebase App Distribution is
+            // registered against applicationId "com.tsunaguba.corechat". Using the
+            // ".debug" suffix would produce a package name Firebase rejects on upload
+            // ("package name does not match your Firebase app's package name").
             versionNameSuffix = "-debug"
         }
         release {
