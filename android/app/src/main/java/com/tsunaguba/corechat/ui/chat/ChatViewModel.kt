@@ -59,11 +59,18 @@ class ChatViewModel @Inject constructor(
                     )
                 }
                 .onCompletion {
-                    _uiState.value = _uiState.value.copy(
-                        isSending = false,
-                        messages = _uiState.value.messages
-                            .updateAssistant(assistantMsg.id) { copy(isStreaming = false) },
-                    )
+                    val snapshot = _uiState.value
+                    val current = snapshot.messages.firstOrNull { it.id == assistantMsg.id }
+                    val updatedMessages = if (current != null && current.content.isEmpty()) {
+                        // Drop the placeholder assistant bubble if no chunks arrived
+                        // (e.g. screen closed, early cancellation, engine returned nothing).
+                        snapshot.messages.filterNot { it.id == assistantMsg.id }
+                    } else {
+                        snapshot.messages.updateAssistant(assistantMsg.id) {
+                            copy(isStreaming = false)
+                        }
+                    }
+                    _uiState.value = snapshot.copy(isSending = false, messages = updatedMessages)
                 }
                 .collect { chunk ->
                     if (chunk.isEmpty()) return@collect

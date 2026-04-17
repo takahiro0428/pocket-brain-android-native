@@ -6,15 +6,16 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.hilt)
     alias(libs.plugins.ksp)
-    alias(libs.plugins.google.services)
     alias(libs.plugins.firebase.appdistribution)
 }
 
-// Load secrets from local.properties (never committed). Falls back to env vars for CI safety.
+// Load Gemini API key from local.properties (never committed). Falls back to env vars for CI.
 val geminiApiKey: String = run {
     val propsFile = rootProject.file("local.properties")
     val fromFile = if (propsFile.exists()) {
-        Properties().apply { propsFile.inputStream().use { load(it) } }.getProperty("GEMINI_API_KEY")
+        Properties().apply { propsFile.inputStream().use { load(it) } }
+            .getProperty("GEMINI_API_KEY")
+            ?.takeIf { it.isNotBlank() }
     } else null
     fromFile ?: System.getenv("GEMINI_API_KEY") ?: ""
 }
@@ -98,16 +99,13 @@ dependencies {
     implementation(libs.bundles.compose)
 
     implementation(libs.hilt.android)
-    kapt(libs.hilt.compiler)
+    ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
 
-    implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.analytics)
-
-    // Oondevice Gemini Nano via AICore (primary)
+    // On-device Gemini Nano via AICore (primary engine)
     implementation(libs.google.ai.edge.aicore)
     // Cloud Gemini (fallback when AICore unavailable)
     implementation(libs.google.ai.generativeai)
@@ -118,9 +116,4 @@ dependencies {
     testImplementation(libs.mockk)
     testImplementation(libs.turbine)
     testImplementation(libs.kotlinx.coroutines.test)
-}
-
-// Hilt uses kapt; required config
-kapt {
-    correctErrorTypes = true
 }

@@ -1,10 +1,4 @@
-# Android build outputs & local config
-android/**/build/
-android/.gradle/
-android/local.properties
-android/app/google-services.json
-android/captures/
-android/**/*.iml
+# Repo-wide ignores. Android-specific rules live in android/.gitignore.
 
 # APK / Keystore artefacts
 *.apk

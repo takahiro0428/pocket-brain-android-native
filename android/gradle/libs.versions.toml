@@ -9,9 +9,7 @@ composeBom = "2024.09.02"
 hilt = "2.52"
 hiltNavigationCompose = "1.2.0"
 coroutines = "1.8.1"
-firebaseBom = "33.3.0"
 firebaseAppDistribution = "5.0.0"
-googleServices = "4.4.2"
 aicore = "0.0.1-exp02"
 generativeai = "0.9.0"
 junit = "4.13.2"
@@ -43,10 +41,6 @@ hilt-navigation-compose = { module = "androidx.hilt:hilt-navigation-compose", ve
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 
-# Firebase
-firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebaseBom" }
-firebase-analytics = { module = "com.google.firebase:firebase-analytics" }
-
 # AI
 google-ai-edge-aicore = { module = "com.google.ai.edge.aicore:aicore", version.ref = "aicore" }
 google-ai-generativeai = { module = "com.google.ai.client.generativeai:generativeai", version.ref = "generativeai" }
@@ -73,8 +67,6 @@ compose-debug = [
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
-kotlin-kapt = { id = "org.jetbrains.kotlin.kapt", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
-google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }
 firebase-appdistribution = { id = "com.google.firebase.appdistribution", version.ref = "firebaseAppDistribution" }

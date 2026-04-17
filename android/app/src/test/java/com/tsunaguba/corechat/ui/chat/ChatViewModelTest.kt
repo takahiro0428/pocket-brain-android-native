@@ -1,6 +1,5 @@
 package com.tsunaguba.corechat.ui.chat
 
-import app.cash.turbine.test
 import com.tsunaguba.corechat.domain.model.AiModelStatus
 import com.tsunaguba.corechat.domain.model.Role
 import com.tsunaguba.corechat.domain.repository.ChatRepository
@@ -10,15 +9,16 @@ import com.tsunaguba.corechat.testing.MainDispatcherRule
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ChatViewModelTest {
@@ -27,10 +27,10 @@ class ChatViewModelTest {
     val mainRule = MainDispatcherRule()
 
     private fun vm(
-        sendFlow: kotlinx.coroutines.flow.Flow<String> = flowOf("Hello", ", ", "world"),
+        sendFlow: Flow<String> = flowOf("Hello", ", ", "world"),
         statusFlow: MutableStateFlow<AiModelStatus> = MutableStateFlow(AiModelStatus.Ready),
     ): ChatViewModel {
-        val repo = mockk<ChatRepository>(relaxed = true)
+        val repo = mockk<ChatRepository>(relaxed = false)
         every { repo.status } returns statusFlow
         every { repo.sendMessage(any(), any()) } returns sendFlow
         return ChatViewModel(
@@ -40,51 +40,39 @@ class ChatViewModelTest {
     }
 
     @Test
-    fun `send aggregates streaming chunks into a single assistant message`() = runTest {
-        val model = vm()
-
-        model.uiState.test {
-            awaitItem() // initial
+    fun `send aggregates streaming chunks into a single assistant message`() =
+        runTest(mainRule.testDispatcher.scheduler) {
+            val model = vm()
 
             model.send("hi")
-            advanceUntilIdle()
 
-            // Drain any intermediate states; take the final one.
-            var last = awaitItem()
-            while (last.isSending || last.messages.lastOrNull()?.isStreaming == true) {
-                last = awaitItem()
-            }
-
-            assertEquals(2, last.messages.size)
-            assertEquals(Role.USER, last.messages[0].role)
-            assertEquals("hi", last.messages[0].content)
-            assertEquals(Role.ASSISTANT, last.messages[1].role)
-            assertEquals("Hello, world", last.messages[1].content)
-            assertFalse(last.messages[1].isStreaming)
-            assertFalse(last.isSending)
-            cancelAndIgnoreRemainingEvents()
+            val final = model.uiState.first { !it.isSending }
+            assertEquals(2, final.messages.size)
+            assertEquals(Role.USER, final.messages[0].role)
+            assertEquals("hi", final.messages[0].content)
+            assertEquals(Role.ASSISTANT, final.messages[1].role)
+            assertEquals("Hello, world", final.messages[1].content)
+            assertFalse(final.messages[1].isStreaming)
+            assertFalse(final.isSending)
         }
-    }
 
     @Test
-    fun `empty prompt does not trigger send`() = runTest {
+    fun `empty prompt does not trigger send`() = runTest(mainRule.testDispatcher.scheduler) {
         val model = vm()
         model.send("   ")
-        advanceUntilIdle()
         assertTrue(model.uiState.value.messages.isEmpty())
         assertFalse(model.uiState.value.isSending)
     }
 
     @Test
-    fun `status updates propagate into uiState`() = runTest {
+    fun `status updates propagate into uiState`() = runTest(mainRule.testDispatcher.scheduler) {
         val status = MutableStateFlow<AiModelStatus>(AiModelStatus.Initializing)
         val model = vm(statusFlow = status)
 
-        advanceUntilIdle()
+        // UnconfinedTestDispatcher flushes observeStatus() synchronously during init.
         assertEquals(AiModelStatus.Initializing, model.uiState.value.status)
 
         status.value = AiModelStatus.CloudFallback
-        advanceUntilIdle()
         assertEquals(AiModelStatus.CloudFallback, model.uiState.value.status)
     }
 }

@@ -14,19 +14,21 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * On-device Gemini Nano engine backed by AICore. Construction is lazy because the SDK
- * performs model resolution on first use. Download progress is surfaced via [status].
+ * On-device Gemini Nano engine backed by AICore. Model creation is lazy; the download
+ * (if needed) is driven via [DownloadCallback] so the UI can show progress.
  */
 class AiCoreEngine(
-    private val context: Context,
+    @Suppress("unused") private val context: Context,
 ) : AiEngine {
 
-    override val id: String = "aicore"
+    override val id: String = ENGINE_ID
 
     private val _status = MutableStateFlow<AiModelStatus>(AiModelStatus.Initializing)
     val status: StateFlow<AiModelStatus> = _status.asStateFlow()
@@ -34,22 +36,31 @@ class AiCoreEngine(
     private val modelMutex = Mutex()
     @Volatile private var model: GenerativeModel? = null
 
+    /** Total bytes the current download is expected to produce (0 until started). */
+    @Volatile private var downloadTotalBytes: Long = 0
+
     /**
-     * Feature-probe the SDK without provoking a model download. Any failure is
-     * treated as "unavailable" so the provider can fall back to cloud.
+     * Probe: instantiate the model and prepare the inference engine. If the device
+     * lacks AICore support or the prepare call fails for any reason, we treat the
+     * engine as unavailable so the provider can fall back to cloud.
      */
     override suspend fun isAvailable(): Boolean = runCatching {
-        ensureModel()
+        val m = ensureModel()
+        // prepareInferenceEngine resolves the model asset (possibly triggering a download).
+        // The DownloadCallback transitions status through Downloading -> Ready.
+        m.prepareInferenceEngine()
+        _status.compareAndSet(AiModelStatus.Initializing, AiModelStatus.Ready)
         true
     }.getOrElse {
         _status.value = AiModelStatus.Unavailable
         false
     }
 
-    override fun stream(history: List<ChatMessage>, prompt: String): Flow<String> {
+    override fun stream(history: List<ChatMessage>, prompt: String): Flow<String> = flow {
+        val m = ensureModel()
         val composed = composePrompt(history, prompt)
-        val chunks: Flow<GenerateContentResponse> = requireModel().generateContentStream(composed)
-        return chunks.map { it.text.orEmpty() }
+        val chunks: Flow<GenerateContentResponse> = m.generateContentStream(composed)
+        emitAll(chunks.map { it.text.orEmpty() })
     }
 
     private suspend fun ensureModel(): GenerativeModel {
@@ -59,25 +70,26 @@ class AiCoreEngine(
         }
     }
 
-    private fun requireModel(): GenerativeModel =
-        model ?: error("AiCoreEngine.stream called before isAvailable() — illegal state")
-
     private fun createModel(): GenerativeModel {
         val cfg: GenerationConfig = generationConfig {
-            temperature = 0.2f
-            topK = 16
-            maxOutputTokens = 512
+            temperature = DEFAULT_TEMPERATURE
+            topK = DEFAULT_TOP_K
+            maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS
         }
         val callback = object : DownloadCallback {
             override fun onDownloadStarted(bytesToDownload: Long) {
-                _status.value = AiModelStatus.Downloading(0f)
+                downloadTotalBytes = bytesToDownload
+                _status.value = AiModelStatus.Downloading(progress = 0f)
             }
             override fun onDownloadProgress(totalBytesDownloaded: Long) {
-                // Absolute byte progress; UI only needs a coarse indicator.
-                _status.value = AiModelStatus.Downloading(
-                    progress = (_status.value as? AiModelStatus.Downloading)?.progress
-                        ?.coerceAtLeast(0.1f) ?: 0.1f
-                )
+                val total = downloadTotalBytes
+                val progress = if (total > 0) {
+                    (totalBytesDownloaded.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+                } else {
+                    // Total unknown; surface indeterminate progress as a small non-zero value.
+                    INDETERMINATE_PROGRESS
+                }
+                _status.value = AiModelStatus.Downloading(progress = progress)
             }
             override fun onDownloadFailed(failureStatus: String, e: Exception) {
                 _status.value = AiModelStatus.Error(reason = failureStatus)
@@ -86,23 +98,31 @@ class AiCoreEngine(
                 _status.value = AiModelStatus.Ready
             }
         }
-        val created = GenerativeModel(
+        return GenerativeModel(
             generationConfig = cfg,
             downloadConfig = DownloadConfig(callback),
         )
-        // If the device already has the model cached, no callback fires — treat as Ready.
-        _status.compareAndSet(AiModelStatus.Initializing, AiModelStatus.Ready)
-        return created
     }
 
     private fun composePrompt(history: List<ChatMessage>, prompt: String): String {
         if (history.isEmpty()) return prompt
         val sb = StringBuilder()
-        history.forEach { m ->
+        history.takeLast(MAX_HISTORY_TURNS).forEach { m ->
             val label = if (m.role == Role.USER) "User" else "Assistant"
             sb.append(label).append(": ").append(m.content).append('\n')
         }
         sb.append("User: ").append(prompt).append('\n').append("Assistant: ")
         return sb.toString()
+    }
+
+    companion object {
+        const val ENGINE_ID = "aicore"
+        private const val DEFAULT_TEMPERATURE = 0.2f
+        private const val DEFAULT_TOP_K = 16
+        private const val DEFAULT_MAX_OUTPUT_TOKENS = 512
+        private const val INDETERMINATE_PROGRESS = 0.05f
+
+        /** Clip prompt history to avoid exceeding Nano's ~2k-token input window. */
+        private const val MAX_HISTORY_TURNS = 16
     }
 }
