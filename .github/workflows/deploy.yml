@@ -17,6 +17,11 @@ on:
 permissions:
   contents: read
 
+# Concurrency behaviour: if a new push arrives mid-distribution, the in-flight
+# run is cancelled. Firebase App Distribution uses an atomic upload so no
+# partial artefact is left on the server, but testers may receive two
+# back-to-back notifications (old run cancelled, new run succeeded). This is
+# intentional — we prefer "last write wins" over queuing stale releases.
 concurrency:
   group: android-deploy-${{ github.ref }}
   cancel-in-progress: true
@@ -30,6 +35,21 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Preflight — required secrets
+        env:
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        working-directory: .
+        run: |
+          missing=""
+          [ -z "${FIREBASE_APP_ID}" ] && missing="${missing} FIREBASE_APP_ID"
+          [ -z "${FIREBASE_SERVICE_ACCOUNT_JSON}" ] && missing="${missing} FIREBASE_SERVICE_ACCOUNT_JSON"
+          if [ -n "${missing}" ]; then
+            echo "::error::Required secret(s) missing:${missing}"
+            echo "::error::Register them in Settings → Secrets and variables → Actions. See android/SETUP.md."
+            exit 1
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -57,6 +77,9 @@ jobs:
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --stacktrace
 
+      - name: Lint (debug)
+        run: ./gradlew :app:lintDebug --stacktrace
+
       - name: Assemble debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
 
@@ -78,6 +101,23 @@ jobs:
             echo "${NOTES}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload lint report as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report-${{ github.sha }}
+          path: android/app/build/reports/lint-results-debug.html
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Upload to Firebase App Distribution
         uses: wzieba/Firebase-Distribution-Github-Action@v1

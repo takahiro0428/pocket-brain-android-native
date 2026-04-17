@@ -4,8 +4,10 @@ import com.tsunaguba.corechat.domain.model.AiModelStatus
 import com.tsunaguba.corechat.domain.model.Role
 import com.tsunaguba.corechat.domain.repository.ChatRepository
 import com.tsunaguba.corechat.domain.usecase.ObserveModelStatusUseCase
+import com.tsunaguba.corechat.domain.usecase.RetryEngineUseCase
 import com.tsunaguba.corechat.domain.usecase.SendMessageUseCase
 import com.tsunaguba.corechat.testing.MainDispatcherRule
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -33,8 +35,10 @@ class ChatViewModelTest {
         val repo = mockk<ChatRepository>(relaxed = false)
         every { repo.status } returns statusFlow
         every { repo.sendMessage(any(), any()) } returns sendFlow
+        coEvery { repo.retry() } returns Unit
         return ChatViewModel(
             sendMessage = SendMessageUseCase(repo),
+            retryEngine = RetryEngineUseCase(repo),
             observeStatus = ObserveModelStatusUseCase(repo),
         )
     }

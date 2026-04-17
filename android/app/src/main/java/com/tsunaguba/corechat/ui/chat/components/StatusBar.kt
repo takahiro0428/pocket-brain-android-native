@@ -39,7 +39,9 @@ fun StatusBar(
         AiModelStatus.CloudFallback -> stringResource(R.string.status_cloud_fallback) to StatusWarn
         AiModelStatus.Initializing -> stringResource(R.string.status_initializing) to StatusWarn
         AiModelStatus.Unavailable -> stringResource(R.string.status_unavailable) to StatusError
-        is AiModelStatus.Error -> stringResource(R.string.status_error, status.reason) to StatusError
+        // NOTE: status.reason is intentionally not shown to the user — it may contain
+        // low-level SDK exception strings / device identifiers. Reason is only logged.
+        is AiModelStatus.Error -> stringResource(R.string.status_error) to StatusError
     }
 
     Surface(

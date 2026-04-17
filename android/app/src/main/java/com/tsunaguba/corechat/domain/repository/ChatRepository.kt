@@ -10,6 +10,12 @@ interface ChatRepository {
     val status: StateFlow<AiModelStatus>
 
     /**
+     * Explicitly re-probe engine availability. Call after a persistent error to let
+     * the user recover without restarting the app.
+     */
+    suspend fun retry()
+
+    /**
      * Stream assistant response text chunks for [prompt] given conversation [history].
      * Emits incremental deltas; the caller is responsible for concatenating.
      *

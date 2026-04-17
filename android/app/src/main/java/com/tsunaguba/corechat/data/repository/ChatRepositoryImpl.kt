@@ -22,4 +22,6 @@ class ChatRepositoryImpl @Inject constructor(
 
     override fun sendMessage(history: List<ChatMessage>, prompt: String): Flow<String> =
         engines.stream(history, prompt).flowOn(io)
+
+    override suspend fun retry() = engines.retry()
 }

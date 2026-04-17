@@ -1,10 +1,12 @@
 package com.tsunaguba.corechat.ui.chat
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.tsunaguba.corechat.domain.model.ChatMessage
 import com.tsunaguba.corechat.domain.model.Role
 import com.tsunaguba.corechat.domain.usecase.ObserveModelStatusUseCase
+import com.tsunaguba.corechat.domain.usecase.RetryEngineUseCase
 import com.tsunaguba.corechat.domain.usecase.SendMessageUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -21,6 +23,7 @@ import javax.inject.Inject
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val sendMessage: SendMessageUseCase,
+    private val retryEngine: RetryEngineUseCase,
     observeStatus: ObserveModelStatusUseCase,
 ) : ViewModel() {
 
@@ -52,8 +55,11 @@ class ChatViewModel @Inject constructor(
         activeJob = viewModelScope.launch {
             sendMessage(history, trimmed)
                 .catch { e ->
+                    // Never surface raw SDK error strings to the user (may contain
+                    // device identifiers / stack fragments). Log in detail; display generic.
+                    Log.w(TAG, "sendMessage failed", e)
                     _uiState.value = _uiState.value.copy(
-                        transientError = e.message ?: "送信に失敗しました",
+                        transientError = GENERIC_SEND_ERROR,
                         messages = _uiState.value.messages
                             .updateAssistant(assistantMsg.id) { copy(isStreaming = false) },
                     )
@@ -90,8 +96,18 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    fun retry() {
+        viewModelScope.launch { retryEngine() }
+    }
+
     private inline fun List<ChatMessage>.updateAssistant(
         id: String,
         transform: ChatMessage.() -> ChatMessage,
     ): List<ChatMessage> = map { if (it.id == id) it.transform() else it }
+
+    private companion object {
+        private const val TAG = "ChatViewModel"
+        // User-safe generic message. Detailed reason goes to logs only.
+        private const val GENERIC_SEND_ERROR = "送信に失敗しました。時間をおいて再試行してください。"
+    }
 }

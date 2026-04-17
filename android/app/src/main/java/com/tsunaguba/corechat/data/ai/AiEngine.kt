@@ -14,7 +14,16 @@ interface AiEngine {
     /** Stable identifier used for logging / telemetry. */
     val id: String
 
-    /** Lightweight availability probe. Implementations must not throw. */
+    /**
+     * Availability probe.
+     * - Implementations MUST NOT throw; failure must surface as a `false` return value.
+     * - Implementations SHOULD be I/O-tolerant: the probe may perform a network call or
+     *   trigger an on-device model resolution. Callers must invoke from a non-UI
+     *   coroutine context (the default Hilt-provided @IoDispatcher scope is used by
+     *   `AiEngineProvider`).
+     * - Implementations SHOULD bound their own work (e.g. with `withTimeout`) so a
+     *   stalled network does not produce an unbounded hang.
+     */
     suspend fun isAvailable(): Boolean
 
     /**

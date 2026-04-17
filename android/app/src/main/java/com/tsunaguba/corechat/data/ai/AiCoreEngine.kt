@@ -14,11 +14,13 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeout
 
 /**
  * On-device Gemini Nano engine backed by AICore. Model creation is lazy; the download
@@ -47,12 +49,19 @@ class AiCoreEngine(
     override suspend fun isAvailable(): Boolean = runCatching {
         val m = ensureModel()
         // prepareInferenceEngine resolves the model asset (possibly triggering a download).
-        // The DownloadCallback transitions status through Downloading -> Ready.
-        m.prepareInferenceEngine()
+        // Wrap in a timeout so a stalled network (no DownloadCallback activity) does not
+        // leave the status flow stuck in Downloading indefinitely.
+        withTimeout(PREPARE_TIMEOUT_MS) { m.prepareInferenceEngine() }
         _status.compareAndSet(AiModelStatus.Initializing, AiModelStatus.Ready)
         true
-    }.getOrElse {
+    }.getOrElse { t ->
+        // Timeout or any other failure -> unavailable; caller can retry explicitly.
+        val reason = when (t) {
+            is TimeoutCancellationException -> "prepare-timeout"
+            else -> t::class.simpleName ?: "prepare-failed"
+        }
         _status.value = AiModelStatus.Unavailable
+        android.util.Log.w(TAG, "AiCore prepare failed: $reason", t)
         false
     }
 
@@ -117,6 +126,7 @@ class AiCoreEngine(
 
     companion object {
         const val ENGINE_ID = "aicore"
+        private const val TAG = "AiCoreEngine"
         private const val DEFAULT_TEMPERATURE = 0.2f
         private const val DEFAULT_TOP_K = 16
         private const val DEFAULT_MAX_OUTPUT_TOKENS = 512
@@ -124,5 +134,8 @@ class AiCoreEngine(
 
         /** Clip prompt history to avoid exceeding Nano's ~2k-token input window. */
         private const val MAX_HISTORY_TURNS = 16
+
+        /** Upper bound on prepareInferenceEngine() — prevents indefinite hang on stalled network. */
+        private const val PREPARE_TIMEOUT_MS = 60_000L
     }
 }
