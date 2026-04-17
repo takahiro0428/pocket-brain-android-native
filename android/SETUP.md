@@ -11,7 +11,7 @@
 |---|---|
 | Android Studio | Koala (2024.1) 以降 |
 | JDK | 17 (Temurin 推奨) |
-| Android SDK | API 35 (Android 15) インストール済み |
+| Android SDK | compileSdk / targetSdk = API 35 (Android 15)。minSdk = API 31 (Android 12) ※AICore SDK の要件 |
 | 実機（AICore 検証用） | Gemini Nano 対応端末（Pixel 8 Pro / 8a / 9 系、対応 Galaxy 等）。Android 14+ |
 | エミュレータ | AICore 非対応。クラウドフォールバック経路での動作確認に利用 |
 | Firebase プロジェクト | App Distribution 用に作成済み（Android アプリ登録で `applicationId = com.tsunaguba.corechat` を指定） |
