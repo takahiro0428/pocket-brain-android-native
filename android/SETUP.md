@@ -56,11 +56,23 @@ gradle wrapper --gradle-version 8.10.2 --distribution-type bin
 |---|:---:|---|---|
 | `FIREBASE_APP_ID` | 必須 | Firebase App Distribution のアプリ ID | Firebase コンソール → プロジェクト設定 → 一般 → Android アプリ → アプリ ID（`1:xxxx:android:yyyy`） |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | 必須 | Firebase 認証（サービスアカウント JSON 全文） | GCP コンソールでサービスアカウント作成 → ロール `Firebase App Distribution Admin` 付与 → キー作成（JSON）して**ファイル内容全文**を貼り付け |
-| `TESTERS_EMAILS` | 任意 | 配布対象テスターのメールアドレス（カンマ区切り） | 例: `alice@example.com,bob@example.com`。未指定時は `internal-testers` グループに配信 |
+| `TESTERS_EMAILS` | ※ | 配布対象テスターのメールアドレス（カンマ区切り） | 例: `alice@example.com,bob@example.com`。**Firebase 側での事前登録は不要**（初回配信時に招待メールが自動送信）|
+| `TESTER_GROUPS` | ※ | 配布対象テスターグループのエイリアス（カンマ区切り） | 例: `internal-testers`。**Firebase コンソールで事前にグループ作成必須**（未作成のエイリアスを渡すと `404 Requested entity was not found` で失敗）|
 | `GEMINI_API_KEY` | 任意 | クラウドフォールバック用 Gemini API キー | https://aistudio.google.com/app/apikey 未設定の場合は AICore 対応端末のみで動作 |
 
+> ※ `TESTERS_EMAILS` と `TESTER_GROUPS` は**少なくとも片方**を設定してください。両方空の場合は Preflight step で early-fail します。
+>
 > **認証方式:** Firebase CLI トークン (`firebase login:ci`) は 2024 年以降 deprecated のため採用していません。サービスアカウント JSON 方式のみサポートします。  
 > Firebase CLI tokens are deprecated; this project uses service account JSON only.
+
+### 3.0 テスター配布先の選び方 / Tester Routing
+
+| 方式 | 前準備 | 長所 | 短所 |
+|---|---|---|---|
+| **個別メール** (`TESTERS_EMAILS`) | Firebase 側で**不要**（初回配信で自動招待メール送信）| セットアップが最小、すぐ配信可能 | テスター追加／削除のたびに Secret を更新 |
+| **グループ** (`TESTER_GROUPS`) | Firebase コンソールで「App Distribution → Testers & Groups → Add group」でエイリアス作成必須 | グループ側でメンバー管理できるため Secret 更新不要 | コンソール設定が必要、未作成だと 404 で失敗 |
+
+**初期設定のおすすめ:** まず `TESTERS_EMAILS` だけで開始し、テスター数が 3 名を超えたタイミングで `TESTER_GROUPS` へ移行。
 
 ### 3.1 ⚠️ `GEMINI_API_KEY` の取扱い上の注意 / API Key Risk Notes
 
@@ -127,7 +139,9 @@ sequenceDiagram
 | 症状 / Symptom | 原因 / Cause | 対処 / Fix |
 |---|---|---|
 | 非対応端末で「AI利用不可」のまま | `GEMINI_API_KEY` が空 | `local.properties` または GitHub Secret を設定 |
-| Firebase アップロード失敗 `App ID does not match` | Firebase アプリ未登録 or applicationId 不一致 | Firebase コンソールで `com.tsunaguba.corechat` のアプリが存在するか確認 |
+| Firebase アップロード `package name ... does not match` | `applicationId` が Firebase 登録アプリと不一致 | Firebase コンソール側のアプリの package が `com.tsunaguba.corechat` であることを確認 |
+| Firebase 配信 `404 Requested entity was not found` | `TESTER_GROUPS` で指定したエイリアスが Firebase に未登録 | Firebase コンソール → App Distribution → Testers & Groups でグループ作成、または `TESTER_GROUPS` を空にして `TESTERS_EMAILS` で配布 |
+| Preflight で `At least one of TESTER_GROUPS or TESTERS_EMAILS must be set` | 両方の Secret が空 | どちらかを設定（§3.0 参照） |
 | Firebase アップロード `401 / 403` | サービスアカウントのロール不足 or Secret 未設定 | `FIREBASE_SERVICE_ACCOUNT_JSON` を設定し、`Firebase App Distribution Admin` ロールを付与 |
 | AICore 初回ダウンロードが完了しない | ストレージ不足 / ネットワーク不安定 | Wi-Fi 接続、10GB 以上の空き確認 |
 | `gradle wrapper --gradle-version` が失敗 | システム Gradle 未インストール | [Gradle 公式](https://gradle.org/install/) からインストール |

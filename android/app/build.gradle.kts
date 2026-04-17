@@ -91,7 +91,11 @@ firebaseAppDistribution {
     artifactType = "APK"
     // Actual testers / groups are supplied by the CI workflow (wzieba action).
     // This Gradle block exists only for local `./gradlew appDistributionUploadDebug` usage.
-    groups = (project.findProperty("fadGroups") as String?) ?: "internal-testers"
+    // Groups default to empty: local invocations distribute only to the explicit
+    // testers list, if any. Override via -PfadGroups=group1,group2 only after
+    // confirming those aliases exist in the Firebase console.
+    groups = (project.findProperty("fadGroups") as String?) ?: ""
+    testers = (project.findProperty("fadTesters") as String?) ?: ""
     releaseNotes = (project.findProperty("fadReleaseNotes") as String?) ?: "Local build"
 }
 
