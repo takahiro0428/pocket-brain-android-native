@@ -8,6 +8,7 @@ import com.google.ai.edge.aicore.GenerationConfig
 import com.google.ai.edge.aicore.GenerativeAIException
 import com.google.ai.edge.aicore.GenerativeModel
 import com.google.ai.edge.aicore.generationConfig
+import com.tsunaguba.corechat.domain.model.AiEngineMode
 import com.tsunaguba.corechat.domain.model.AiModelStatus
 import com.tsunaguba.corechat.domain.model.ChatMessage
 import com.tsunaguba.corechat.domain.model.Role
@@ -50,10 +51,13 @@ class AiCoreEngine(
     override suspend fun isAvailable(): Boolean = runCatching {
         val m = ensureModel()
         // prepareInferenceEngine resolves the model asset (possibly triggering a download).
-        // Wrap in a timeout so a stalled network (no DownloadCallback activity) does not
-        // leave the status flow stuck in Downloading indefinitely.
+        // Wrap in a timeout so a stalled handshake (no DownloadCallback activity) does not
+        // leave the status flow stuck in Initializing indefinitely.
         withTimeout(PREPARE_TIMEOUT_MS) { m.prepareInferenceEngine() }
-        _status.compareAndSet(AiModelStatus.Initializing, AiModelStatus.Ready)
+        // Unconditionally transition to Ready on a successful probe. `compareAndSet`
+        // from Initializing would leave a prior Error/Unavailable sticky across
+        // retry() calls, defeating explicit user-triggered recovery.
+        _status.value = AiModelStatus.Ready(AiEngineMode.OnDevice)
         true
     }.getOrElse { t ->
         // Timeout or any other failure -> unavailable; caller can retry explicitly.
@@ -61,7 +65,13 @@ class AiCoreEngine(
             is TimeoutCancellationException -> "prepare-timeout"
             else -> t::class.simpleName ?: "prepare-failed"
         }
-        _status.value = AiModelStatus.Unavailable
+        // Preserve an in-progress Downloading state — the DownloadCallback is the
+        // authoritative driver for it. Only demote to Unavailable if we're not
+        // actively downloading; otherwise the download callback will eventually
+        // surface Ready / Error on its own.
+        if (_status.value !is AiModelStatus.Downloading) {
+            _status.value = AiModelStatus.Unavailable
+        }
         android.util.Log.w(TAG, "AiCore prepare failed: $reason", t)
         false
     }
@@ -110,7 +120,7 @@ class AiCoreEngine(
                 _status.value = AiModelStatus.Error(reason = failureStatus)
             }
             override fun onDownloadCompleted() {
-                _status.value = AiModelStatus.Ready
+                _status.value = AiModelStatus.Ready(AiEngineMode.OnDevice)
             }
         }
         return GenerativeModel(

@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.tsunaguba.corechat.R
+import com.tsunaguba.corechat.domain.model.AiEngineMode
 import com.tsunaguba.corechat.domain.model.AiModelStatus
 import com.tsunaguba.corechat.ui.theme.StatusError
 import com.tsunaguba.corechat.ui.theme.StatusOk
@@ -31,12 +32,14 @@ fun StatusBar(
     modifier: Modifier = Modifier,
 ) {
     val (label: String, dot: Color) = when (status) {
-        AiModelStatus.Ready -> stringResource(R.string.status_ready) to StatusOk
+        is AiModelStatus.Ready -> when (status.mode) {
+            AiEngineMode.OnDevice -> stringResource(R.string.status_ready_ondevice) to StatusOk
+            AiEngineMode.Cloud -> stringResource(R.string.status_ready_cloud) to StatusOk
+        }
         is AiModelStatus.Downloading -> {
             val pct = (status.progress * 100).toInt().coerceIn(0, 99)
             stringResource(R.string.status_downloading, pct) to StatusWarn
         }
-        AiModelStatus.CloudFallback -> stringResource(R.string.status_cloud_fallback) to StatusWarn
         AiModelStatus.Initializing -> stringResource(R.string.status_initializing) to StatusWarn
         AiModelStatus.Unavailable -> stringResource(R.string.status_unavailable) to StatusError
         // NOTE: status.reason is intentionally not shown to the user — it may contain

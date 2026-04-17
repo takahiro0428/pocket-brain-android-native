@@ -7,5 +7,10 @@ data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
     val status: AiModelStatus = AiModelStatus.Initializing,
     val isSending: Boolean = false,
-    val transientError: String? = null,
+    /**
+     * Flag indicating the last send attempt failed. The UI resolves the
+     * localized message via `R.string.error_send_failed`; keeping a flag here
+     * avoids hardcoding user-visible strings in the ViewModel.
+     */
+    val sendFailed: Boolean = false,
 )
