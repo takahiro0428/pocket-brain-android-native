@@ -40,6 +40,8 @@ jobs:
         env:
           FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          TESTER_GROUPS: ${{ secrets.TESTER_GROUPS }}
+          TESTERS_EMAILS: ${{ secrets.TESTERS_EMAILS }}
         working-directory: .
         run: |
           missing=""
@@ -49,6 +51,21 @@ jobs:
             echo "::error::Required secret(s) missing:${missing}"
             echo "::error::Register them in Settings → Secrets and variables → Actions. See android/SETUP.md."
             exit 1
+          fi
+          # One of TESTER_GROUPS / TESTERS_EMAILS must be populated; otherwise
+          # the Firebase CLI distribute call ends up with no recipient and
+          # returns a confusing "entity not found" 404 late in the pipeline.
+          if [ -z "${TESTER_GROUPS}" ] && [ -z "${TESTERS_EMAILS}" ]; then
+            echo "::error::At least one of TESTER_GROUPS or TESTERS_EMAILS must be set."
+            echo "::error::- TESTER_GROUPS: comma-separated Firebase group aliases (must exist in the console)."
+            echo "::error::- TESTERS_EMAILS: comma-separated tester emails (auto-invited, no console setup needed)."
+            exit 1
+          fi
+          if [ -n "${TESTER_GROUPS}" ]; then
+            echo "Distributing to groups: ${TESTER_GROUPS}"
+          fi
+          if [ -n "${TESTERS_EMAILS}" ]; then
+            echo "Distributing to individual testers (count: $(echo "${TESTERS_EMAILS}" | tr ',' '\n' | grep -c .))"
           fi
 
       - name: Set up JDK 17
@@ -124,7 +141,10 @@ jobs:
         with:
           appId: ${{ secrets.FIREBASE_APP_ID }}
           serviceCredentialsFileContent: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
-          groups: internal-testers
+          # Both groups and testers are optional — preflight already enforces
+          # that at least one is set. Unset values become empty strings, which
+          # the Firebase CLI treats as "no filter on this dimension".
+          groups: ${{ secrets.TESTER_GROUPS }}
           testers: ${{ secrets.TESTERS_EMAILS }}
           file: android/app/build/outputs/apk/debug/app-debug.apk
           releaseNotes: ${{ steps.notes.outputs.notes }}

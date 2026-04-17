@@ -28,7 +28,7 @@ import kotlinx.coroutines.withTimeout
  * (if needed) is driven via [DownloadCallback] so the UI can show progress.
  */
 class AiCoreEngine(
-    @Suppress("unused") private val context: Context,
+    private val context: Context,
 ) : AiEngine {
 
     override val id: String = ENGINE_ID
@@ -82,6 +82,10 @@ class AiCoreEngine(
 
     private fun createModel(): GenerativeModel {
         val cfg: GenerationConfig = generationConfig {
+            // AICore requires an application Context to reach the system service.
+            // Passing the hilt-provided ApplicationContext is mandatory; without it,
+            // content generation fails at runtime.
+            context = this@AiCoreEngine.context
             temperature = DEFAULT_TEMPERATURE
             topK = DEFAULT_TOP_K
             maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS
