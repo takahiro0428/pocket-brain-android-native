@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.tsunaguba.corechat.domain.model.ChatMessage
 import com.tsunaguba.corechat.domain.model.Role
+import com.tsunaguba.corechat.domain.model.canSend
 import com.tsunaguba.corechat.domain.usecase.ObserveModelStatusUseCase
 import com.tsunaguba.corechat.domain.usecase.RetryEngineUseCase
 import com.tsunaguba.corechat.domain.usecase.SendMessageUseCase
@@ -41,6 +42,9 @@ class ChatViewModel @Inject constructor(
     fun send(prompt: String) {
         val trimmed = prompt.trim()
         if (trimmed.isEmpty() || _uiState.value.isSending) return
+        // Defense in depth: the input bar should already be disabled unless status
+        // is Ready, but guard here so programmatic or race-y invocations can't bypass.
+        if (!_uiState.value.status.canSend()) return
 
         val userMsg = ChatMessage(role = Role.USER, content = trimmed)
         val assistantMsg = ChatMessage(role = Role.ASSISTANT, content = "", isStreaming = true)
@@ -49,17 +53,18 @@ class ChatViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(
             messages = history + userMsg + assistantMsg,
             isSending = true,
-            transientError = null,
+            sendFailed = false,
         )
 
         activeJob = viewModelScope.launch {
             sendMessage(history, trimmed)
                 .catch { e ->
                     // Never surface raw SDK error strings to the user (may contain
-                    // device identifiers / stack fragments). Log in detail; display generic.
+                    // device identifiers / stack fragments). Log in detail; the UI
+                    // resolves a localized generic message from the `sendFailed` flag.
                     Log.w(TAG, "sendMessage failed", e)
                     _uiState.value = _uiState.value.copy(
-                        transientError = GENERIC_SEND_ERROR,
+                        sendFailed = true,
                         messages = _uiState.value.messages
                             .updateAssistant(assistantMsg.id) { copy(isStreaming = false) },
                     )
@@ -91,8 +96,8 @@ class ChatViewModel @Inject constructor(
     }
 
     fun clearError() {
-        if (_uiState.value.transientError != null) {
-            _uiState.value = _uiState.value.copy(transientError = null)
+        if (_uiState.value.sendFailed) {
+            _uiState.value = _uiState.value.copy(sendFailed = false)
         }
     }
 
@@ -107,7 +112,5 @@ class ChatViewModel @Inject constructor(
 
     private companion object {
         private const val TAG = "ChatViewModel"
-        // User-safe generic message. Detailed reason goes to logs only.
-        private const val GENERIC_SEND_ERROR = "送信に失敗しました。時間をおいて再試行してください。"
     }
 }
