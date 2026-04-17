@@ -5,6 +5,7 @@ import com.google.ai.edge.aicore.DownloadCallback
 import com.google.ai.edge.aicore.DownloadConfig
 import com.google.ai.edge.aicore.GenerateContentResponse
 import com.google.ai.edge.aicore.GenerationConfig
+import com.google.ai.edge.aicore.GenerativeAIException
 import com.google.ai.edge.aicore.GenerativeModel
 import com.google.ai.edge.aicore.generationConfig
 import com.tsunaguba.corechat.domain.model.AiModelStatus
@@ -100,7 +101,8 @@ class AiCoreEngine(
                 }
                 _status.value = AiModelStatus.Downloading(progress = progress)
             }
-            override fun onDownloadFailed(failureStatus: String, e: Exception) {
+            override fun onDownloadFailed(failureStatus: String, e: GenerativeAIException) {
+                android.util.Log.w(TAG, "AICore model download failed: $failureStatus", e)
                 _status.value = AiModelStatus.Error(reason = failureStatus)
             }
             override fun onDownloadCompleted() {
