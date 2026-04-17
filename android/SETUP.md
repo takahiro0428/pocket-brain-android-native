@@ -101,9 +101,11 @@ sequenceDiagram
     Dev->>GH: push to main (android/**)
     GH->>CI: trigger deploy.yml
     CI->>CI: Inject GEMINI_API_KEY → local.properties
+    CI->>CI: Verify injection (length + sha256-prefix, no value leak)
     CI->>CI: ./gradlew :app:testDebugUnitTest
-    CI->>CI: ./gradlew :app:assembleDebug
-    CI->>FB: Upload APK with release notes
+    CI->>CI: ./gradlew :app:assembleDebug (versionCode = offset + GITHUB_RUN_NUMBER)
+    CI->>CI: Resolve corechat-v<name>-<code>-debug.apk
+    CI->>FB: Upload versioned APK with release notes
     FB->>Tester: 配信通知メール
     Tester->>FB: APK ダウンロード / インストール
 ```
@@ -112,10 +114,56 @@ sequenceDiagram
 - **パス絞り込み:** 他のリポジトリ変更では走りません
 - **Concurrency (後勝ち):** 短時間で複数 push が来た場合、先行の run は `cancel-in-progress: true` により**アップロード中でもキャンセル**されます。Firebase 側には中途半端な APK は残りません（wzieba は atomic POST）が、**テスターに 2 通メール（古い方のキャンセル通知＋新しい方の配信通知）が届く可能性**があります
 - **テスト & Lint:** `:app:testDebugUnitTest` と `:app:lintDebug` が失敗するとビルド・配信は走りません
-- **Artifact 保全:** ビルドされた `app-debug.apk` と Lint レポートは GitHub Actions Artifact として 30 日 / 14 日保持されます（Firebase 障害時のバックアップ経路）
+- **Artifact 保全:** ビルドされた `corechat-v<versionName>-<versionCode>-debug.apk` と Lint レポートは GitHub Actions Artifact として 30 日 / 14 日保持されます（Firebase 障害時のバックアップ経路）
 - **Preflight:** `FIREBASE_APP_ID` / `FIREBASE_SERVICE_ACCOUNT_JSON` が未設定の場合はビルド開始前に失敗します（§3 のセットアップを促すエラーメッセージ）
+- **GEMINI_API_KEY 検証:** Inject ステップ直後に `local.properties` への書込を検証し、キー長と sha256 の先頭 12 文字（値そのものは出力しない）をログに出します。空・短すぎる場合は警告を出すので、「AI利用不可」が出たら Actions ログで該当ステップを確認してください
 
 手動トリガー時には任意のリリースノート文字列を渡せます（入力欄 `release_notes`）。
+
+---
+
+## 4.1 バージョン管理 / Version Management
+
+**SoT:** `android/version.properties`
+
+| プロパティ | 用途 |
+|---|---|
+| `versionName` | ユーザー向けセマンティックバージョン（例: `0.1.0`）。リリース毎に手動でバンプ |
+| `versionCodeOffset` | CI ビルドの `versionCode` に加算されるオフセット。`versionCode = versionCodeOffset + GITHUB_RUN_NUMBER` |
+
+**CI ビルドの versionCode 算出:**
+
+```
+versionCode = versionCodeOffset + GITHUB_RUN_NUMBER
+```
+
+`GITHUB_RUN_NUMBER` はワークフロー実行毎に単調増加するため、各 CI ビルドは**必ず前回より大きい** `versionCode` を得ます。これにより Android は新 APK を**アップグレードとして受け入れます**（同じ `versionCode` だと「アプリがインストールされていません」で拒否される）。
+
+**ローカルビルドの versionCode 算出:**
+
+```
+versionCode = versionCodeOffset + 1
+```
+
+ローカル開発用は常に `versionCodeOffset + 1`。CI 由来の APK（`versionCode = offset + N`）より小さくなるため、同じ端末で CI 版を使いたい場合は一度アンインストールしてからローカル版を入れ直してください。
+
+**APK ファイル名:**
+
+```
+corechat-v<versionName>-<versionCode>-<buildType>.apk
+例: corechat-v0.1.0-42-debug.apk
+```
+
+バージョン毎にユニークなファイル名にすることで、Firebase App Distribution からダウンロードした APK がブラウザの重複リネーム（`(1)`, `(2)`）で識別できなくなる問題を防ぎます。
+
+**リリース時のバンプ手順:**
+
+1. `android/version.properties` の `versionName` を更新（例: `0.1.0` → `0.2.0`）
+2. コミット & `main` への push
+3. CI が新 `versionName` + 次の `GITHUB_RUN_NUMBER` で APK を生成
+4. Firebase App Distribution が新ビルドとして配信
+
+`versionCodeOffset` は通常触る必要はありません。例外的に、CI のカウンター外（手動ビルド等）で既に配布済みの `versionCode` を超える必要がある場合のみバンプします。
 
 ---
 
@@ -138,7 +186,9 @@ sequenceDiagram
 
 | 症状 / Symptom | 原因 / Cause | 対処 / Fix |
 |---|---|---|
-| 非対応端末で「AI利用不可」のまま | `GEMINI_API_KEY` が空 | `local.properties` または GitHub Secret を設定 |
+| 非対応端末で「AI利用不可」のまま | `GEMINI_API_KEY` が空 / 無効 / 短すぎる | GitHub Secret を再設定（前後の空白や引用符を混入させない）。CI ログの「Verify GEMINI_API_KEY injection」ステップで `length` と `sha256-prefix` を確認（前回の値と一致していれば正しく同じキーが注入されている）|
+| APK のインストール時に「アプリがインストールされていません」 | 旧 APK と同じ `versionCode` のビルドを当てている | `android/version.properties` の `versionCodeOffset` を確認。CI は `offset + GITHUB_RUN_NUMBER` で単調増加させるため通常問題になりません。ローカルビルドを CI 版の後に入れたい場合は一度アンインストール |
+| ダウンロードした APK 名に `(1)` `(2)` が付く | 過去の配信と同じファイル名を使っている | 本リポジトリでは `corechat-v<versionName>-<versionCode>-<buildType>.apk` 形式にバージョン毎ユニーク化済み。古い `app-debug.apk` を削除してから再ダウンロード |
 | Firebase アップロード `package name ... does not match` | `applicationId` が Firebase 登録アプリと不一致 | Firebase コンソール側のアプリの package が `com.tsunaguba.corechat` であることを確認 |
 | Firebase 配信 `404 Requested entity was not found` | `TESTER_GROUPS` で指定したエイリアスが Firebase に未登録 | Firebase コンソール → App Distribution → Testers & Groups でグループ作成、または `TESTER_GROUPS` を空にして `TESTERS_EMAILS` で配布 |
 | Preflight で `At least one of TESTER_GROUPS or TESTERS_EMAILS must be set` | 両方の Secret が空 | どちらかを設定（§3.0 参照） |

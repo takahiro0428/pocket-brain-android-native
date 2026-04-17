@@ -83,9 +83,29 @@ jobs:
         run: |
           : > local.properties
           if [ -n "${GEMINI_API_KEY}" ]; then
-            echo "GEMINI_API_KEY=${GEMINI_API_KEY}" >> local.properties
+            # printf (not echo) to avoid shell interpretation of backslashes or
+            # leading `-` in unusual key values.
+            printf 'GEMINI_API_KEY=%s\n' "${GEMINI_API_KEY}" >> local.properties
           else
             echo "::warning::GEMINI_API_KEY is empty; cloud fallback will be disabled"
+          fi
+
+      - name: Verify GEMINI_API_KEY injection (no value leak)
+        # Logs only the injected value's length and a short sha256 prefix so we
+        # can diagnose "AI利用不可" without ever exposing the secret itself.
+        # Masked by GitHub's runner regardless, but we keep the prefix short to
+        # avoid accidental disclosure if masking ever slips.
+        run: |
+          if grep -q '^GEMINI_API_KEY=..*' local.properties; then
+            VAL=$(sed -n 's/^GEMINI_API_KEY=//p' local.properties | head -n1)
+            LEN=${#VAL}
+            HASH=$(printf '%s' "${VAL}" | sha256sum | cut -c1-12)
+            echo "GEMINI_API_KEY injected (length=${LEN}, sha256-prefix=${HASH})"
+            if [ "${LEN}" -lt 20 ]; then
+              echo "::warning::GEMINI_API_KEY looks suspiciously short (length=${LEN}). Expected ~39 chars for an AI Studio key. Re-check the repository secret value (no surrounding quotes/whitespace)."
+            fi
+          else
+            echo "::warning::GEMINI_API_KEY is NOT set in local.properties — cloud fallback will stay disabled and non-AICore devices will show 'AI利用不可'."
           fi
 
       - name: Grant gradlew execute permission
@@ -98,7 +118,29 @@ jobs:
         run: ./gradlew :app:lintDebug --stacktrace
 
       - name: Assemble debug APK
+        # GITHUB_RUN_NUMBER feeds into versionCode (see android/version.properties +
+        # android/app/build.gradle.kts) so every CI build ships a strictly greater
+        # versionCode than the previous one. Without this, Android refuses to
+        # upgrade an already-installed APK and Firebase distributes what looks like
+        # the same build to testers.
         run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Resolve versioned APK path
+        id: apk
+        # Filename is stamped with versionName + versionCode by the build script.
+        # We discover it here instead of hardcoding so a single source-of-truth
+        # (version.properties) can change versionName without breaking the workflow.
+        run: |
+          APK_FILE=$(ls app/build/outputs/apk/debug/corechat-v*.apk 2>/dev/null | head -n1)
+          if [ -z "${APK_FILE}" ]; then
+            echo "::error::No versioned APK produced under app/build/outputs/apk/debug/. Check the assemble step output and android/app/build.gradle.kts output naming."
+            ls -la app/build/outputs/apk/debug/ || true
+            exit 1
+          fi
+          APK_NAME=$(basename "${APK_FILE}")
+          echo "name=${APK_NAME}" >> "$GITHUB_OUTPUT"
+          echo "workspace_path=android/app/build/outputs/apk/debug/${APK_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Resolved APK: ${APK_NAME}"
 
       - name: Compose release notes
         id: notes
@@ -122,8 +164,8 @@ jobs:
       - name: Upload APK as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-${{ github.sha }}
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.workspace_path }}
           retention-days: 30
           if-no-files-found: error
 
@@ -146,5 +188,5 @@ jobs:
           # the Firebase CLI treats as "no filter on this dimension".
           groups: ${{ secrets.TESTER_GROUPS }}
           testers: ${{ secrets.TESTERS_EMAILS }}
-          file: android/app/build/outputs/apk/debug/app-debug.apk
+          file: ${{ steps.apk.outputs.workspace_path }}
           releaseNotes: ${{ steps.notes.outputs.notes }}
