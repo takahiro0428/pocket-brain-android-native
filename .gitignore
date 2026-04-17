@@ -1,0 +1,14 @@
+# Repo-wide ignores. Android-specific rules live in android/.gitignore.
+
+# APK / Keystore artefacts
+*.apk
+*.keystore
+*.jks
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

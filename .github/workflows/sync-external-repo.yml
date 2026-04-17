@@ -35,6 +35,7 @@ jobs:
           rsync -av --delete \
             --exclude='.git' \
             --exclude='.github' \
+            --exclude='android' \
             /tmp/external-repo/ ./
 
       - name: Check for changes

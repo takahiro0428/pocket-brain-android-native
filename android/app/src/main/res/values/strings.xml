@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">CoreChat</string>
+
+    <!-- Status pill -->
+    <string name="status_ready">準備完了</string>
+    <string name="status_downloading">モデル取得中 %1$d%%</string>
+    <string name="status_error">エラーが発生しました</string>
+    <string name="error_send_failed">送信に失敗しました。時間をおいて再試行してください。</string>
+    <string name="action_retry">再試行</string>
+    <string name="status_cloud_fallback">クラウド接続中</string>
+    <string name="status_unavailable">AI利用不可</string>
+    <string name="status_initializing">初期化中</string>
+
+    <!-- Input -->
+    <string name="input_hint">メッセージを入力</string>
+    <string name="send_content_description">送信</string>
+
+    <!-- Chat -->
+    <string name="empty_state_title">オンデバイス AI とプライベートに会話</string>
+    <string name="empty_state_subtitle">端末内で完結します。メッセージは送信されません。</string>
+    <string name="assistant_label">AI</string>
+    <string name="user_label">あなた</string>
+</resources>

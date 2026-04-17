@@ -263,6 +263,16 @@ Phase 0 から開始します。
 
 ---
 
+## Android アプリ (CoreChat)
+
+本リポジトリには、AI ネイティブ開発方法論を実際に適用して構築した参照実装として、Android ネイティブ AI チャットアプリ **CoreChat** を含みます。
+
+- **場所:** [`android/`](android/)
+- **特徴:** Gemini Nano (AICore) によるオンデバイス推論 + クラウド Gemini フォールバック
+- **セットアップ:** [`android/SETUP.md`](android/SETUP.md)
+
+---
+
 ## ライセンス
 
 Apache License 2.0 - 詳細は [LICENSE](LICENSE) ファイルを参照してください。

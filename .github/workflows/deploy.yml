@@ -1,0 +1,130 @@
+name: Android配信 / Android Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+    inputs:
+      release_notes:
+        description: 'リリースノート（Release notes）'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+# Concurrency behaviour: if a new push arrives mid-distribution, the in-flight
+# run is cancelled. Firebase App Distribution uses an atomic upload so no
+# partial artefact is left on the server, but testers may receive two
+# back-to-back notifications (old run cancelled, new run succeeded). This is
+# intentional — we prefer "last write wins" over queuing stale releases.
+concurrency:
+  group: android-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-distribute:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Preflight — required secrets
+        env:
+          FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        working-directory: .
+        run: |
+          missing=""
+          [ -z "${FIREBASE_APP_ID}" ] && missing="${missing} FIREBASE_APP_ID"
+          [ -z "${FIREBASE_SERVICE_ACCOUNT_JSON}" ] && missing="${missing} FIREBASE_SERVICE_ACCOUNT_JSON"
+          if [ -n "${missing}" ]; then
+            echo "::error::Required secret(s) missing:${missing}"
+            echo "::error::Register them in Settings → Secrets and variables → Actions. See android/SETUP.md."
+            exit 1
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Inject GEMINI_API_KEY into local.properties
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          : > local.properties
+          if [ -n "${GEMINI_API_KEY}" ]; then
+            echo "GEMINI_API_KEY=${GEMINI_API_KEY}" >> local.properties
+          else
+            echo "::warning::GEMINI_API_KEY is empty; cloud fallback will be disabled"
+          fi
+
+      - name: Grant gradlew execute permission
+        run: chmod +x ./gradlew
+
+      - name: Run unit tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: Lint (debug)
+        run: ./gradlew :app:lintDebug --stacktrace
+
+      - name: Assemble debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Compose release notes
+        id: notes
+        env:
+          DISPATCH_NOTES: ${{ github.event.inputs.release_notes }}
+          COMMIT_SHA: ${{ github.sha }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          if [ -n "${DISPATCH_NOTES}" ]; then
+            NOTES="${DISPATCH_NOTES}"
+          else
+            SHORT_SHA="${COMMIT_SHA:0:7}"
+            NOTES="${SHORT_SHA} ${COMMIT_MSG:-(manual build)}"
+          fi
+          {
+            echo "notes<<EOF"
+            echo "${NOTES}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload lint report as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report-${{ github.sha }}
+          path: android/app/build/reports/lint-results-debug.html
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload to Firebase App Distribution
+        uses: wzieba/Firebase-Distribution-Github-Action@v1
+        with:
+          appId: ${{ secrets.FIREBASE_APP_ID }}
+          serviceCredentialsFileContent: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          groups: internal-testers
+          testers: ${{ secrets.TESTERS_EMAILS }}
+          file: android/app/build/outputs/apk/debug/app-debug.apk
+          releaseNotes: ${{ steps.notes.outputs.notes }}
