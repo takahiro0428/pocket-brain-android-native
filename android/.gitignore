@@ -1,0 +1,21 @@
+# Gradle / Android build outputs
+build/
+.gradle/
+*/build/
+app/build/
+captures/
+*.iml
+
+# Local-only config (do NOT commit secrets)
+local.properties
+app/google-services.json
+
+# IDE
+.idea/
+*.hprof
+
+# Artefacts
+*.apk
+*.aab
+*.keystore
+*.jks

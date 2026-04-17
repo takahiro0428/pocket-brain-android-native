@@ -1,0 +1,20 @@
+# Android build outputs & local config
+android/**/build/
+android/.gradle/
+android/local.properties
+android/app/google-services.json
+android/captures/
+android/**/*.iml
+
+# APK / Keystore artefacts
+*.apk
+*.keystore
+*.jks
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

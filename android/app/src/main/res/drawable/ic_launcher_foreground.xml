@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Speech bubble with subtle inner chip evoking on-device AI. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,32h40a8,8 0 0 1 8,8v22a8,8 0 0 1 -8,8H58l-10,10v-10h-14a8,8 0 0 1 -8,-8V40a8,8 0 0 1 8,-8z" />
+    <path
+        android:fillColor="#1A73E8"
+        android:pathData="M46,46h16v4H46zM46,54h16v4H46z" />
+</vector>

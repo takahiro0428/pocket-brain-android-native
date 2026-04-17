@@ -1,0 +1,126 @@
+import java.util.Properties
+
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.hilt)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.google.services)
+    alias(libs.plugins.firebase.appdistribution)
+}
+
+// Load secrets from local.properties (never committed). Falls back to env vars for CI safety.
+val geminiApiKey: String = run {
+    val propsFile = rootProject.file("local.properties")
+    val fromFile = if (propsFile.exists()) {
+        Properties().apply { propsFile.inputStream().use { load(it) } }.getProperty("GEMINI_API_KEY")
+    } else null
+    fromFile ?: System.getenv("GEMINI_API_KEY") ?: ""
+}
+
+android {
+    namespace = "com.tsunaguba.corechat"
+    compileSdk = 35
+
+    defaultConfig {
+        applicationId = "com.tsunaguba.corechat"
+        minSdk = 29
+        targetSdk = 35
+        versionCode = 1
+        versionName = "0.1.0"
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        vectorDrawables { useSupportLibrary = true }
+
+        buildConfigField("String", "GEMINI_API_KEY", "\"${geminiApiKey}\"")
+    }
+
+    buildTypes {
+        debug {
+            isMinifyEnabled = false
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
+        }
+    }
+}
+
+firebaseAppDistribution {
+    artifactType = "APK"
+    // Actual testers / groups are supplied by the CI workflow (wzieba action).
+    // This Gradle block exists only for local `./gradlew appDistributionUploadDebug` usage.
+    groups = (project.findProperty("fadGroups") as String?) ?: "internal-testers"
+    releaseNotes = (project.findProperty("fadReleaseNotes") as String?) ?: "Local build"
+}
+
+dependencies {
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.activity.compose)
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.bundles.compose)
+
+    implementation(libs.hilt.android)
+    kapt(libs.hilt.compiler)
+    implementation(libs.hilt.navigation.compose)
+
+    implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.kotlinx.coroutines.android)
+
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.analytics)
+
+    // Oondevice Gemini Nano via AICore (primary)
+    implementation(libs.google.ai.edge.aicore)
+    // Cloud Gemini (fallback when AICore unavailable)
+    implementation(libs.google.ai.generativeai)
+
+    debugImplementation(libs.bundles.compose.debug)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.mockk)
+    testImplementation(libs.turbine)
+    testImplementation(libs.kotlinx.coroutines.test)
+}
+
+// Hilt uses kapt; required config
+kapt {
+    correctErrorTypes = true
+}

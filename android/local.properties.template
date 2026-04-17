@@ -1,0 +1,10 @@
+# Copy this file to `local.properties` and fill in the values.
+# `local.properties` is git-ignored and must never be committed.
+
+# Required: Android SDK location (Android Studio populates this automatically)
+# sdk.dir=/Users/you/Library/Android/sdk
+
+# Optional: Cloud Gemini API key. Used when the device lacks AICore (Gemini Nano) support.
+# Leave blank to disable cloud fallback — the app will show "AI利用不可" on non-AICore devices.
+# Obtain a key from https://aistudio.google.com/app/apikey
+GEMINI_API_KEY=
