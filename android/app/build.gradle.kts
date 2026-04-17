@@ -26,7 +26,10 @@ android {
 
     defaultConfig {
         applicationId = "com.tsunaguba.corechat"
-        minSdk = 29
+        // AICore SDK requires minSdk 31 (Android 12). Runtime Gemini Nano support
+        // additionally needs Android 14+ on select devices; the engine provider
+        // handles runtime availability and falls back to cloud when unsupported.
+        minSdk = 31
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
