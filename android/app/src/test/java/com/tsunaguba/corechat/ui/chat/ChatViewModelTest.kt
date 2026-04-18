@@ -90,7 +90,7 @@ class ChatViewModelTest {
     @Test
     fun `send is skipped when status is Unavailable`() =
         runTest(mainRule.testDispatcher.scheduler) {
-            val status = MutableStateFlow<AiModelStatus>(AiModelStatus.Unavailable)
+            val status = MutableStateFlow<AiModelStatus>(AiModelStatus.Unavailable())
             val (model, repo) = vm(statusFlow = status)
 
             model.send("hi")

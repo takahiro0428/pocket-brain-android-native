@@ -2,6 +2,7 @@ package com.tsunaguba.corechat.data.ai
 
 import com.tsunaguba.corechat.domain.model.AiEngineMode
 import com.tsunaguba.corechat.domain.model.AiModelStatus
+import com.tsunaguba.corechat.domain.model.UnavailableReason
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -33,10 +34,16 @@ class AiEngineProviderTest {
         coEvery { it.isAvailable() } returns available
     }
 
-    private fun cloud(available: Boolean): CloudGeminiEngine =
+    private fun cloud(
+        available: Boolean,
+        reason: UnavailableReason = UnavailableReason.Unknown,
+    ): CloudGeminiEngine =
         mockk<CloudGeminiEngine>(relaxed = false).also {
             every { it.id } returns "cloud-gemini"
             coEvery { it.isAvailable() } returns available
+            // The provider reads `lastUnavailableReason` right after a false probe
+            // result to surface a reason-specific UI message.
+            every { it.lastUnavailableReason } returns if (available) null else reason
         }
 
     @Test
@@ -65,14 +72,31 @@ class AiEngineProviderTest {
     }
 
     @Test
-    fun `aicore and cloud both unavailable yields Unavailable`() = runTest {
+    fun `aicore and cloud both unavailable yields Unavailable with cloud reason`() = runTest {
         val provider = AiEngineProvider(
             aicore = aicore(available = false),
-            cloud = cloud(available = false),
+            cloud = cloud(available = false, reason = UnavailableReason.ApiKeyMissing),
             externalScope = TestScope(UnconfinedTestDispatcher(testScheduler)),
         )
         advanceUntilIdle()
-        assertEquals(AiModelStatus.Unavailable, provider.status.first())
+        assertEquals(
+            AiModelStatus.Unavailable(UnavailableReason.ApiKeyMissing),
+            provider.status.first(),
+        )
+    }
+
+    @Test
+    fun `cloud reason propagates for NetworkUnreachable`() = runTest {
+        val provider = AiEngineProvider(
+            aicore = aicore(available = false),
+            cloud = cloud(available = false, reason = UnavailableReason.NetworkUnreachable),
+            externalScope = TestScope(UnconfinedTestDispatcher(testScheduler)),
+        )
+        advanceUntilIdle()
+        assertEquals(
+            AiModelStatus.Unavailable(UnavailableReason.NetworkUnreachable),
+            provider.status.first(),
+        )
     }
 
     @Test

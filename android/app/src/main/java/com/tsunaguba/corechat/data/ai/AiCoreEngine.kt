@@ -70,7 +70,11 @@ class AiCoreEngine(
         // actively downloading; otherwise the download callback will eventually
         // surface Ready / Error on its own.
         if (_status.value !is AiModelStatus.Downloading) {
-            _status.value = AiModelStatus.Unavailable
+            // AICore's own failure modes (no Gemini Nano support, prepare timeout)
+            // are distinct from cloud reasons; surface as Unknown so the fallback
+            // reason from CloudGeminiEngine (if any) takes precedence at the
+            // provider level.
+            _status.value = AiModelStatus.Unavailable()
         }
         android.util.Log.w(TAG, "AiCore prepare failed: $reason", t)
         false

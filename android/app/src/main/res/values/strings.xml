@@ -25,8 +25,22 @@
 
     <!-- Unavailable card -->
     <string name="unavailable_card_title">AIが利用できません</string>
+    <!-- Fallback body used when reason = Unknown or no reason is available. -->
     <string name="unavailable_card_body">ネットワークまたは API キーを確認のうえ、再試行してください。</string>
+    <!-- Reason-specific bodies; picked by UnavailableCard based on UnavailableReason. -->
+    <string name="unavailable_reason_api_key_missing">APIキーが設定されていません。アプリの配信元に連絡してください。</string>
+    <string name="unavailable_reason_api_key_malformed">APIキーの形式が不正です。配信元に再ビルドを依頼してください。</string>
+    <string name="unavailable_reason_api_key_rejected">APIキーが無効または権限不足です。期限切れや revoke の可能性があります。</string>
+    <string name="unavailable_reason_network">ネットワークに接続できません。Wi-Fi / モバイルデータをご確認ください。</string>
+    <string name="unavailable_reason_timeout">AIサーバーの応答が遅延しています。時間をおいて再試行してください。</string>
     <string name="action_retry_full">再検出して再試行</string>
+
+    <!-- Debug diagnostics (shown only in debug builds under the unavailable card). -->
+    <string name="debug_diagnostics_title">診断情報（debug ビルド）</string>
+    <string name="debug_diagnostics_key_length">APIキー長: %1$d</string>
+    <string name="debug_diagnostics_key_hash">APIキーSHA-256先頭: %1$s</string>
+    <string name="debug_diagnostics_key_missing">APIキー未注入</string>
+    <string name="debug_diagnostics_probe_reason">プローブ結果: %1$s</string>
 
     <!-- Input -->
     <string name="input_hint">メッセージを入力</string>

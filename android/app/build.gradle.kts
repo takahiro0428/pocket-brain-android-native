@@ -20,6 +20,19 @@ val geminiApiKey: String = run {
     fromFile ?: System.getenv("GEMINI_API_KEY") ?: ""
 }
 
+// Debug signing: the keystore is restored from GitHub Secret DEBUG_KEYSTORE_B64 on CI
+// and committed-out locally (*.keystore is .gitignore'd). Without a fixed keystore,
+// every CI runner generates a fresh ~/.android/debug.keystore so the APK's signing
+// cert changes between builds and Android refuses to upgrade installed APKs with
+// INSTALL_FAILED_UPDATE_INCOMPATIBLE. See android/SETUP.md §3.2.
+// Module-relative path (resolves to android/app/debug/corechat-debug.keystore). Using
+// project.file keeps the intent "this module's debug/" obvious vs. rootProject.file
+// which would silently break if the Gradle rootDir ever moved.
+val debugKeystoreFile: File = project.file("debug/corechat-debug.keystore")
+val debugStorePassword: String = System.getenv("DEBUG_KEYSTORE_PASSWORD") ?: "android"
+val debugKeyAlias: String = System.getenv("DEBUG_KEY_ALIAS") ?: "androiddebugkey"
+val debugKeyPassword: String = System.getenv("DEBUG_KEY_PASSWORD") ?: "android"
+
 // Version SoT: android/version.properties. See that file for the rationale.
 // versionCode is derived from GITHUB_RUN_NUMBER on CI to guarantee monotonic increase
 // across builds; otherwise every Firebase-distributed APK would share versionCode=1
@@ -55,6 +68,22 @@ require(resolvedVersionCode in 1..2_100_000_000) {
 android {
     namespace = "com.tsunaguba.corechat"
     compileSdk = 35
+
+    signingConfigs {
+        getByName("debug") {
+            // fail-open: if the fixed keystore is missing (e.g. fresh clone before
+            // SETUP.md §3.2 is followed), AGP falls back to auto-generating
+            // ~/.android/debug.keystore so `./gradlew assembleDebug` still works.
+            // On CI, the `Restore debug keystore from Secret` step writes this file
+            // before Gradle runs, so the signing cert stays constant across runs.
+            if (debugKeystoreFile.exists()) {
+                storeFile = debugKeystoreFile
+                storePassword = debugStorePassword
+                keyAlias = debugKeyAlias
+                keyPassword = debugKeyPassword
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "com.tsunaguba.corechat"
@@ -98,6 +127,22 @@ android {
             // ".debug" suffix would produce a package name Firebase rejects on upload
             // ("package name does not match your Firebase app's package name").
             versionNameSuffix = "-debug"
+            signingConfig = signingConfigs.getByName("debug")
+
+            // Diagnostics for the debug-only "AI利用不可" card. Release variants get
+            // zeroed placeholders so the actual key length / fingerprint never ship in
+            // consumer builds — even though the key body itself is still in BuildConfig
+            // (see SETUP.md §3.1), there's no reason to expose additional metadata.
+            val geminiKeyHashPrefix: String = if (geminiApiKey.isEmpty()) {
+                ""
+            } else {
+                java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(geminiApiKey.toByteArray())
+                    .joinToString("") { "%02x".format(it) }
+                    .substring(0, 12)
+            }
+            buildConfigField("int", "GEMINI_API_KEY_LENGTH", "${geminiApiKey.length}")
+            buildConfigField("String", "GEMINI_API_KEY_SHA256_PREFIX", "\"$geminiKeyHashPrefix\"")
         }
         release {
             isMinifyEnabled = true
@@ -106,6 +151,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Zeroed diagnostics so the debug card fields exist for compile but carry
+            // no information in release APKs.
+            buildConfigField("int", "GEMINI_API_KEY_LENGTH", "0")
+            buildConfigField("String", "GEMINI_API_KEY_SHA256_PREFIX", "\"\"")
         }
     }
 
@@ -147,6 +196,28 @@ firebaseAppDistribution {
     groups = (project.findProperty("fadGroups") as String?) ?: ""
     testers = (project.findProperty("fadTesters") as String?) ?: ""
     releaseNotes = (project.findProperty("fadReleaseNotes") as String?) ?: "Local build"
+}
+
+// Local diagnostic: verify that the debug keystore at app/debug/corechat-debug.keystore
+// matches the one CI signs with. Running this on two machines (or CI vs local) and
+// comparing the SHA-1 output confirms whether testers will get "update" vs
+// INSTALL_FAILED_UPDATE_INCOMPATIBLE. See android/SETUP.md §3.2.
+tasks.register("printDebugCertFingerprint") {
+    group = "verification"
+    description = "Prints SHA-1 of the debug signing cert. Must match CI and across machines."
+    doLast {
+        require(debugKeystoreFile.exists()) {
+            "Debug keystore missing at ${debugKeystoreFile.absolutePath}. See android/SETUP.md §3.2."
+        }
+        exec {
+            commandLine(
+                "keytool", "-list", "-v",
+                "-keystore", debugKeystoreFile.absolutePath,
+                "-storepass", debugStorePassword,
+                "-alias", debugKeyAlias,
+            )
+        }
+    }
 }
 
 dependencies {

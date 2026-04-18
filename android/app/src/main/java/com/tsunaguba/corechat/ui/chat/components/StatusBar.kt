@@ -41,7 +41,10 @@ fun StatusBar(
             stringResource(R.string.status_downloading, pct) to StatusWarn
         }
         AiModelStatus.Initializing -> stringResource(R.string.status_initializing) to StatusWarn
-        AiModelStatus.Unavailable -> stringResource(R.string.status_unavailable) to StatusError
+        // The status pill stays generic ("AI利用不可"); UnavailableCard is the surface
+        // that renders the specific reason so the pill doesn't get truncated on
+        // long translations.
+        is AiModelStatus.Unavailable -> stringResource(R.string.status_unavailable) to StatusError
         // NOTE: status.reason is intentionally not shown to the user — it may contain
         // low-level SDK exception strings / device identifiers. Reason is only logged.
         is AiModelStatus.Error -> stringResource(R.string.status_error) to StatusError

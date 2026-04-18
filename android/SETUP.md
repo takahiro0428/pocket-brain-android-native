@@ -59,6 +59,10 @@ gradle wrapper --gradle-version 8.10.2 --distribution-type bin
 | `TESTERS_EMAILS` | ※ | 配布対象テスターのメールアドレス（カンマ区切り） | 例: `alice@example.com,bob@example.com`。**Firebase 側での事前登録は不要**（初回配信時に招待メールが自動送信）|
 | `TESTER_GROUPS` | ※ | 配布対象テスターグループのエイリアス（カンマ区切り） | 例: `internal-testers`。**Firebase コンソールで事前にグループ作成必須**（未作成のエイリアスを渡すと `404 Requested entity was not found` で失敗）|
 | `GEMINI_API_KEY` | 任意 | クラウドフォールバック用 Gemini API キー | https://aistudio.google.com/app/apikey 未設定の場合は AICore 対応端末のみで動作 |
+| `DEBUG_KEYSTORE_B64` | 必須 | CI ビルドの debug 署名鍵（base64 エンコード）。全 CI ビルド間で証明書 SHA-1 を一定に保ち、テスター端末が上書きインストール可能になる。詳細は §3.2 | §3.2 の手順で生成 |
+| `DEBUG_KEYSTORE_PASSWORD` | 任意（既定 `android`） | keystore のストアパスワード | §3.2 の手順と合わせて設定 |
+| `DEBUG_KEY_ALIAS` | 任意（既定 `androiddebugkey`） | 鍵エイリアス | §3.2 の手順と合わせて設定 |
+| `DEBUG_KEY_PASSWORD` | 任意（既定 `android`） | 鍵自体のパスワード | §3.2 の手順と合わせて設定 |
 
 > ※ `TESTERS_EMAILS` と `TESTER_GROUPS` は**少なくとも片方**を設定してください。両方空の場合は Preflight step で early-fail します。
 >
@@ -85,6 +89,46 @@ gradle wrapper --gradle-version 8.10.2 --distribution-type bin
 5. **本番ユーザー配布へ移行する際は BFF (Backend-for-Frontend) 経由に切替**: クライアント直接のクラウド API コールは廃止し、認証済みサーバ経由へ
 
 > **Security Note**: `GEMINI_API_KEY` is embedded in the APK via BuildConfig in plain text. Anyone with the APK can extract it via `apktool`. Keep distribution to internal testers only, restrict the key in AI Studio, and revoke/rotate if compromised. For consumer distribution, move to a backend proxy instead.
+
+### 3.2 Debug 署名鍵の共有 / Shared Debug Keystore
+
+CI でビルドされる debug APK の**署名証明書を全ビルドで一致**させるため、固定の debug keystore を GitHub Secrets に保管します。これを行わないと、CI runner が毎回新しい `~/.android/debug.keystore` を自動生成し、証明書 SHA-1 が変わるため Android が `INSTALL_FAILED_UPDATE_INCOMPATIBLE` で更新を拒否します（テスターは毎回アンインストールが必要になる）。
+
+#### 初回セットアップ手順（オペレーター、1 回のみ・PowerShell）
+
+```powershell
+# 1. キーストア生成。パスフレーズとエイリアスは AGP デフォルトと互換性を取るためそのまま
+keytool -genkeypair -v `
+  -keystore corechat-debug.keystore `
+  -storepass android -keypass android `
+  -alias androiddebugkey `
+  -keyalg RSA -keysize 2048 -validity 8766 `
+  -dname "CN=CoreChat Debug, OU=Dev, O=tsunaguba, L=NA, ST=NA, C=JP"
+
+# 2. base64 変換（改行なし・BOM なし）
+$bytes = [IO.File]::ReadAllBytes("corechat-debug.keystore")
+[Convert]::ToBase64String($bytes) | Out-File -FilePath "corechat-debug.keystore.b64" -Encoding ascii -NoNewline
+
+# 3.（任意）クリップボードにコピーして Secret 登録欄へ貼り付け
+Get-Content "corechat-debug.keystore.b64" -Raw | Set-Clipboard
+```
+
+出力された base64 文字列を GitHub **Settings → Secrets and variables → Actions → New repository secret** に `DEBUG_KEYSTORE_B64` として登録します。パスワード・エイリアスをデフォルト（`android`/`androiddebugkey`/`android`）のままにする場合、他の 3 つの Secret は登録不要です（ワークフローが既定値にフォールバックします）。
+
+> **なぜパスワードがデフォルト値か:** AGP の標準 debug keystore と互換性を保つため、パスワード・エイリアスは意図的にデフォルト値（`android` / `androiddebugkey`）を採用しています。debug 署名鍵の脅威モデルは「なりすまし debug APK の作成」のみで、これは Firebase App Distribution のクローズドな配信経路を前提にすれば低リスクです。カスタムパスワードにしたい場合は 4 つ全ての Secret を併せて登録してください。
+
+#### ローカル開発者への配布
+
+ローカルでも同じ署名を使う場合（ローカルビルドと CI ビルドを同じ端末に交互にインストールしたい場合のみ必要）、オペレーターから `corechat-debug.keystore` を受け取り `android/app/debug/corechat-debug.keystore` に配置します（`*.keystore` は `.gitignore` 済み）。配置しない場合でも AGP デフォルトの自動生成鍵で `./gradlew assembleDebug` は通ります（fail-open）。
+
+検証コマンド（PowerShell）:
+
+```powershell
+cd android
+.\gradlew.bat :app:printDebugCertFingerprint
+```
+
+出力された SHA-1 が CI ログの「Verify APK signing certificate fingerprint」ステップの SHA-1 と一致すれば、ローカル版と CI 版の証明書が同一であることが確認できます。
 
 ---
 
@@ -165,6 +209,8 @@ corechat-v<versionName>-<versionCode>-<buildType>.apk
 
 `versionCodeOffset` は通常触る必要はありません。例外的に、CI のカウンター外（手動ビルド等）で既に配布済みの `versionCode` を超える必要がある場合のみバンプします。
 
+**署名証明書の固定化:** debug 署名鍵は §3.2 の `DEBUG_KEYSTORE_B64` Secret で固定化されています。CI ビルド間で APK の証明書 SHA-1 は常に一致するため、テスター端末は通常の上書きインストールで更新できます（初回切替時は §6 の `INSTALL_FAILED_UPDATE_INCOMPATIBLE` を参照）。
+
 ---
 
 ## 5. AICore 対応端末マトリクス / Device Matrix
@@ -186,8 +232,9 @@ corechat-v<versionName>-<versionCode>-<buildType>.apk
 
 | 症状 / Symptom | 原因 / Cause | 対処 / Fix |
 |---|---|---|
-| 非対応端末で「AI利用不可」のまま | `GEMINI_API_KEY` が空 / 無効 / 短すぎる | GitHub Secret を再設定（前後の空白や引用符を混入させない）。CI ログの「Verify GEMINI_API_KEY injection」ステップで `length` と `sha256-prefix` を確認（前回の値と一致していれば正しく同じキーが注入されている）|
-| APK のインストール時に「アプリがインストールされていません」 | 旧 APK と同じ `versionCode` のビルドを当てている | `android/version.properties` の `versionCodeOffset` を確認。CI は `offset + GITHUB_RUN_NUMBER` で単調増加させるため通常問題になりません。ローカルビルドを CI 版の後に入れたい場合は一度アンインストール |
+| 非対応端末で「AI利用不可」のまま | `GEMINI_API_KEY` が空 / 無効 / 短すぎる / ネットワーク不達 | debug ビルドでは「AIが利用できません」カード下部に原因別メッセージ（「APIキーが設定されていません」「APIキーの形式が不正」「APIキーが無効または権限不足」「ネットワークに接続できません」「AIサーバー応答遅延」）+ 診断ブロック（キー長・SHA-256 先頭・プローブ結果）が表示されます。表示原因に応じて対処してください。Secret を再設定した場合は CI ログの「Verify GEMINI_API_KEY injection」ステップで `length` と `sha256-prefix` を確認（前回の値と一致していれば同じキーが注入されている）|
+| `INSTALL_FAILED_UPDATE_INCOMPATIBLE` / インストール時に「アプリがインストールされていません」 | 旧 APK と APK の**署名証明書**が異なる（§3.2 の Secret をローテーションした初回、または旧バージョン = 固定鍵導入前のビルドを既にインストールしている場合のみ発生） | 一度アンインストールしてから再インストール。`./gradlew :app:printDebugCertFingerprint` の出力と CI の「Verify APK signing certificate fingerprint」ログの SHA-1 を突き合わせて原因を特定。§3.2 で固定化済みなので通常の更新では再発しません |
+| APK のインストール時に「アプリがインストールされていません」（versionCode 由来） | 旧 APK と同じ `versionCode` のビルドを当てている | `android/version.properties` の `versionCodeOffset` を確認。CI は `offset + GITHUB_RUN_NUMBER` で単調増加させるため通常問題になりません。ローカルビルドを CI 版の後に入れたい場合は一度アンインストール |
 | ダウンロードした APK 名に `(1)` `(2)` が付く | 過去の配信と同じファイル名を使っている | 本リポジトリでは `corechat-v<versionName>-<versionCode>-<buildType>.apk` 形式にバージョン毎ユニーク化済み。古い `app-debug.apk` を削除してから再ダウンロード |
 | Firebase アップロード `package name ... does not match` | `applicationId` が Firebase 登録アプリと不一致 | Firebase コンソール側のアプリの package が `com.tsunaguba.corechat` であることを確認 |
 | Firebase 配信 `404 Requested entity was not found` | `TESTER_GROUPS` で指定したエイリアスが Firebase に未登録 | Firebase コンソール → App Distribution → Testers & Groups でグループ作成、または `TESTER_GROUPS` を空にして `TESTERS_EMAILS` で配布 |
