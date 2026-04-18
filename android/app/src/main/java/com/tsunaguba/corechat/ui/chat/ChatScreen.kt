@@ -101,6 +101,7 @@ fun ChatScreen(
         ) {
             when {
                 state.messages.isEmpty() && terminalError -> UnavailableCard(
+                    status = state.status,
                     onRetry = viewModel::retry,
                     modifier = Modifier.align(Alignment.Center),
                 )

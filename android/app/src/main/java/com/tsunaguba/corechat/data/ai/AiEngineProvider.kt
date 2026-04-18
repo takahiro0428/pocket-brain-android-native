@@ -3,6 +3,7 @@ package com.tsunaguba.corechat.data.ai
 import com.tsunaguba.corechat.domain.model.AiEngineMode
 import com.tsunaguba.corechat.domain.model.AiModelStatus
 import com.tsunaguba.corechat.domain.model.ChatMessage
+import com.tsunaguba.corechat.domain.model.UnavailableReason
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -36,7 +37,11 @@ class AiEngineProvider(
 ) {
 
     private val useCloudFlow = MutableStateFlow(false)
-    private val cloudUsable = MutableStateFlow<Boolean?>(null) // null = not probed yet
+    // Cloud probe result: null = probe-not-attempted-yet OR probe-succeeded.
+    // The sibling `cloudProbed` flow disambiguates the two so the combined status
+    // can emit Initializing vs Ready(Cloud) without ambiguity.
+    private val cloudReason = MutableStateFlow<UnavailableReason?>(null)
+    private val cloudProbed = MutableStateFlow(false)
     // Persistent error override — set when a stream call permanently fails
     // (no fallback possible). Cleared at the start of every `stream()` attempt and
     // at the start of every `retry()`, so a successful recovery automatically
@@ -46,15 +51,16 @@ class AiEngineProvider(
     val status: StateFlow<AiModelStatus> = combine(
         aicore.status,
         useCloudFlow,
-        cloudUsable,
+        cloudReason,
+        cloudProbed,
         persistentError,
-    ) { aicoreStatus, useCloud, cloudOk, error ->
+    ) { aicoreStatus, useCloud, reason, probed, error ->
         when {
             error != null -> error
             !useCloud -> aicoreStatus
-            cloudOk == true -> AiModelStatus.Ready(AiEngineMode.Cloud)
-            cloudOk == false -> AiModelStatus.Unavailable
-            else -> AiModelStatus.Initializing
+            !probed -> AiModelStatus.Initializing
+            reason == null -> AiModelStatus.Ready(AiEngineMode.Cloud)
+            else -> AiModelStatus.Unavailable(reason)
         }
     }.stateIn(
         scope = externalScope,
@@ -67,7 +73,8 @@ class AiEngineProvider(
             val aicoreOk = aicore.isAvailable()
             if (!aicoreOk) {
                 val cloudOk = cloud.isAvailable()
-                cloudUsable.value = cloudOk
+                cloudReason.value = if (cloudOk) null else (cloud.lastUnavailableReason ?: UnavailableReason.Unknown)
+                cloudProbed.value = true
                 useCloudFlow.value = true
             }
         }
@@ -84,7 +91,8 @@ class AiEngineProvider(
             useCloudFlow.value = false
         } else {
             val cloudOk = cloud.isAvailable()
-            cloudUsable.value = cloudOk
+            cloudReason.value = if (cloudOk) null else (cloud.lastUnavailableReason ?: UnavailableReason.Unknown)
+            cloudProbed.value = true
             useCloudFlow.value = true
         }
     }
@@ -114,7 +122,8 @@ class AiEngineProvider(
             // `cloud.isAvailable()` returned true above, so reflect that authoritative
             // probe into the state flow. Atomic enough: both writes target distinct flows
             // and the combine handles any transient interleaving safely.
-            cloudUsable.value = true
+            cloudReason.value = null
+            cloudProbed.value = true
             useCloudFlow.value = true
             try {
                 emitAll(cloud.stream(history, prompt))
@@ -124,7 +133,13 @@ class AiEngineProvider(
                 android.util.Log.w(TAG, "cloud fallback also failed", cloudErr)
                 // Probe said "usable" but the real stream failed — force a re-probe on
                 // the next retry() so we don't lie about readiness again.
-                cloudUsable.value = null
+                //
+                // Order note: the intermediate combine state (probed=false, reason=null)
+                // would normally render as Initializing, but persistentError is set
+                // below and takes precedence in the `when` block, so the user sees
+                // Error immediately instead of a brief Initializing flash.
+                cloudProbed.value = false
+                cloudReason.value = null
                 persistentError.value = AiModelStatus.Error("cloud-fallback-failed")
                 throw cloudErr
             }

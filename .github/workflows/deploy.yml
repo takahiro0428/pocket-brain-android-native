@@ -108,6 +108,49 @@ jobs:
             echo "::warning::GEMINI_API_KEY is NOT set in local.properties — cloud fallback will stay disabled and non-AICore devices will show 'AI利用不可'."
           fi
 
+      - name: Restore debug keystore from Secret
+        # A fixed debug keystore keeps the APK signing certificate constant across
+        # CI runs. Without it, AGP auto-generates ~/.android/debug.keystore on each
+        # ubuntu-latest runner, the signing cert differs between builds, and Android
+        # refuses to upgrade an already-installed APK with
+        # INSTALL_FAILED_UPDATE_INCOMPATIBLE. See android/SETUP.md §3.2.
+        env:
+          DEBUG_KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+          DEBUG_KEYSTORE_PASSWORD: ${{ secrets.DEBUG_KEYSTORE_PASSWORD }}
+          DEBUG_KEY_ALIAS: ${{ secrets.DEBUG_KEY_ALIAS }}
+        shell: bash
+        run: |
+          # pipefail: propagate non-zero exit through `| base64 -d`. errexit: fail fast
+          # on any later command so we never proceed to assembleDebug with a broken
+          # keystore (would silently auto-generate a fresh cert and defeat the fix).
+          set -euo pipefail
+          if [ -z "${DEBUG_KEYSTORE_B64}" ]; then
+            echo "::error::DEBUG_KEYSTORE_B64 is not set. Without it every CI build ships a different signing cert and testers will hit INSTALL_FAILED_UPDATE_INCOMPATIBLE. See android/SETUP.md §3.2."
+            exit 1
+          fi
+          mkdir -p app/debug
+          if ! printf '%s' "${DEBUG_KEYSTORE_B64}" | base64 -d > app/debug/corechat-debug.keystore; then
+            echo "::error::base64 decode failed. Ensure DEBUG_KEYSTORE_B64 is valid base64 with no line breaks or BOM."
+            exit 1
+          fi
+          if [ ! -s app/debug/corechat-debug.keystore ]; then
+            echo "::error::Decoded keystore is empty."
+            exit 1
+          fi
+          # Explicitly check keytool's exit code — a mismatched alias/password produces
+          # a non-zero exit with no SHA-1 in stdout and would otherwise sail through to
+          # the "cert SHA-1 prefix: ..." log, causing a confusing assembleDebug failure
+          # further down.
+          if ! keytool -list -keystore app/debug/corechat-debug.keystore \
+                  -storepass "${DEBUG_KEYSTORE_PASSWORD:-android}" \
+                  -alias "${DEBUG_KEY_ALIAS:-androiddebugkey}" > /tmp/keystore_check.txt 2>&1; then
+            echo "::error::keytool -list failed. Check DEBUG_KEYSTORE_PASSWORD / DEBUG_KEY_ALIAS against the keystore generated in SETUP.md §3.2."
+            cat /tmp/keystore_check.txt
+            exit 1
+          fi
+          SHA1=$(grep -oE '[0-9A-F]{2}(:[0-9A-F]{2}){19}' /tmp/keystore_check.txt | head -n1 || true)
+          echo "Debug keystore restored (cert SHA-1 prefix: ${SHA1:0:17}...)"
+
       - name: Grant gradlew execute permission
         run: chmod +x ./gradlew
 
@@ -123,6 +166,15 @@ jobs:
         # versionCode than the previous one. Without this, Android refuses to
         # upgrade an already-installed APK and Firebase distributes what looks like
         # the same build to testers.
+        #
+        # DEBUG_KEYSTORE_* envs are consumed by the `signingConfigs.debug` block in
+        # app/build.gradle.kts. Without them, Gradle falls back to the defaults
+        # (android/androiddebugkey/android); passing them explicitly lets teams
+        # rotate passwords without editing build files.
+        env:
+          DEBUG_KEYSTORE_PASSWORD: ${{ secrets.DEBUG_KEYSTORE_PASSWORD }}
+          DEBUG_KEY_ALIAS: ${{ secrets.DEBUG_KEY_ALIAS }}
+          DEBUG_KEY_PASSWORD: ${{ secrets.DEBUG_KEY_PASSWORD }}
         run: ./gradlew :app:assembleDebug --stacktrace
 
       - name: Resolve versioned APK path
@@ -141,6 +193,29 @@ jobs:
           echo "name=${APK_NAME}" >> "$GITHUB_OUTPUT"
           echo "workspace_path=android/app/build/outputs/apk/debug/${APK_NAME}" >> "$GITHUB_OUTPUT"
           echo "Resolved APK: ${APK_NAME}"
+
+      - name: Verify APK signing certificate fingerprint
+        # Prints the APK's signing cert SHA-1 so we can eyeball it against prior
+        # runs. Any drift indicates the DEBUG_KEYSTORE_B64 Secret was rotated and
+        # testers will need to reinstall this once. See android/SETUP.md §3.2 / §6.
+        shell: bash
+        run: |
+          set -euo pipefail
+          APKSIGNER=$(find "${ANDROID_HOME}" -name apksigner -type f 2>/dev/null | sort -V | tail -n1 || true)
+          if [ -z "${APKSIGNER}" ]; then
+            # Fail instead of warn: this step is the only automated check that the
+            # DEBUG_KEYSTORE_B64 Secret took effect. A silent skip defeats the purpose
+            # of restoring the keystore in the first place.
+            echo "::error::apksigner not found under ANDROID_HOME. Install Android SDK build-tools or set ANDROID_HOME correctly."
+            exit 1
+          fi
+          "${APKSIGNER}" verify --print-certs "app/build/outputs/apk/debug/${{ steps.apk.outputs.name }}" | tee /tmp/apk_certs.txt
+          SHA1=$(grep -oE 'SHA-1 digest: [0-9a-f]{40}' /tmp/apk_certs.txt | head -n1 | awk '{print $3}' || true)
+          if [ -z "${SHA1}" ]; then
+            echo "::error::Could not parse SHA-1 from apksigner output — APK may be unsigned."
+            exit 1
+          fi
+          echo "APK signing cert SHA-1: ${SHA1}"
 
       - name: Compose release notes
         id: notes

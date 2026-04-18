@@ -8,3 +8,12 @@
 # Leave blank to disable cloud fallback — the app will show "AI利用不可" on non-AICore devices.
 # Obtain a key from https://aistudio.google.com/app/apikey
 GEMINI_API_KEY=
+
+# Note: debug keystore credentials are NOT read from this file. build.gradle.kts pulls
+# DEBUG_KEYSTORE_PASSWORD / DEBUG_KEY_ALIAS / DEBUG_KEY_PASSWORD from environment
+# variables only (so CI GitHub Secrets can override without committing defaults).
+# If you need custom credentials locally, export them in your shell before running
+# gradle:
+#   export DEBUG_KEYSTORE_PASSWORD=...
+# Otherwise the AGP defaults ("android"/"androiddebugkey"/"android") are used — these
+# match the keystore generated per android/SETUP.md §3.2.
