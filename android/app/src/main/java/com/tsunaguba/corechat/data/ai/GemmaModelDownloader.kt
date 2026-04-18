@@ -6,6 +6,8 @@ import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -34,6 +36,16 @@ class GemmaModelDownloader(
 ) {
 
     /**
+     * Serialises concurrent [ensure] calls so two coroutines can't race on the
+     * same `.partial` file. The code review flagged a scenario where the
+     * provider's initial probeChain plus a user-triggered retry() could both
+     * enter [ensure] simultaneously, their writes to `.partial` would interleave,
+     * and the SHA-256 stream would mismatch on one or both — producing a spurious
+     * ChecksumMismatchException. A single mutex bounds the invariant neatly.
+     */
+    private val ensureMutex = Mutex()
+
+    /**
      * Ensures the Gemma model is present and valid at [target].
      *
      * @return the target [File] if the model is available (either was already
@@ -49,7 +61,7 @@ class GemmaModelDownloader(
         expectedSizeBytes: Long,
         url: String,
         onProgress: (Float) -> Unit,
-    ): File = withContext(Dispatchers.IO) {
+    ): File = ensureMutex.withLock { withContext(Dispatchers.IO) {
         // Fast path: model already present at expected size. SHA verification here
         // would add ~10s for a 1.5GB file on every app start, which is too slow.
         // The SHA is the "did the download arrive intact" gate; once the file is
@@ -134,7 +146,7 @@ class GemmaModelDownloader(
 
         onProgress(1f)
         target
-    }
+    } }
 
     class InsufficientStorageException(
         val required: Long,

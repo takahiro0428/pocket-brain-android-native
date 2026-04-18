@@ -8,6 +8,7 @@ import com.tsunaguba.corechat.domain.model.ChatMessage
 import com.tsunaguba.corechat.domain.model.Role
 import com.tsunaguba.corechat.domain.model.UnavailableReason
 import java.io.File
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.awaitClose
@@ -64,11 +65,33 @@ class MediaPipeLlmEngine(
     var lastUnavailableReason: UnavailableReason? = null
         private set
 
+    // `llm` writes happen in two places: init under modelMutex (atomic with
+    // the factory.create call), and awaitClose which must run from a MediaPipe
+    // worker thread where we can't suspend to acquire the mutex. AtomicReference
+    // lets awaitClose do a lock-free compareAndSet(engine, null) so only the
+    // specific engine instance that just closed is cleared, without risk of
+    // wiping a newer llm that a concurrent isAvailable() just installed.
     private val modelMutex = Mutex()
+    private val llmRef = AtomicReference<LlmInference?>(null)
 
-    @Volatile
-    private var llm: LlmInference? = null
+    /**
+     * Prevents two concurrent stream() calls from tearing down each other's
+     * engine. MediaPipe 0.10.27 has no per-request cancel so we serialise whole
+     * stream sessions; the second caller waits for the first to complete or be
+     * cancelled before starting. Acquired inside stream(), held across the
+     * callbackFlow's awaitClose so close-and-reinit is atomic.
+     */
+    private val streamMutex = Mutex()
 
+    /**
+     * Availability probe. A `true` return value means the engine *was* ready at
+     * the moment of the call; it does NOT guarantee that a subsequent [stream]
+     * can use the engine without re-initialising, because a concurrent
+     * `stream()` cancellation may close the underlying [LlmInference] between
+     * the probe and the next stream call. [stream] handles this by lazily
+     * rebuilding the engine inside [modelMutex]. Callers should treat
+     * isAvailable() as a best-effort routing hint, not a capability lock.
+     */
     override suspend fun isAvailable(): Boolean {
         // An empty URL means the operator hasn't configured GEMMA_MODEL_URL (Secret
         // not set in CI). We treat this as "MediaPipe disabled" rather than a real
@@ -79,14 +102,18 @@ class MediaPipeLlmEngine(
             return false
         }
 
-        // Already initialised in this process.
-        if (llm != null) {
+        // Already initialised in this process — AtomicReference.get is lock-free
+        // and synchronises with awaitClose's compareAndSet, so we can skip the
+        // mutex on this happy path.
+        if (llmRef.get() != null) {
             lastUnavailableReason = null
             _status.value = AiModelStatus.Ready(AiEngineMode.OnDeviceMediaPipe)
             return true
         }
 
-        // Phase 1: ensure the model file is present and uncorrupted.
+        // Phase 1: ensure the model file is present and uncorrupted. Run outside
+        // the mutex so the 1.5GB download doesn't block other isAvailable() calls
+        // (the download itself is serialised inside GemmaModelDownloader).
         val ensureResult = runCatching {
             downloader.ensure(
                 target = modelFile,
@@ -115,9 +142,12 @@ class MediaPipeLlmEngine(
         }
 
         // Phase 2: load the model into MediaPipe. Bounded so a wedged runtime
-        // doesn't leave status stuck in Initializing.
+        // doesn't leave status stuck in Initializing. Mutex prevents two
+        // concurrent isAvailable() calls from both creating an engine and
+        // leaking one.
         return modelMutex.withLock {
-            if (llm != null) {
+            val cached = llmRef.get()
+            if (cached != null) {
                 lastUnavailableReason = null
                 _status.value = AiModelStatus.Ready(AiEngineMode.OnDeviceMediaPipe)
                 return@withLock true
@@ -140,7 +170,7 @@ class MediaPipeLlmEngine(
                 setUnavailable(UnavailableReason.ModelInitializationFailed)
                 false
             } else {
-                llm = initResult.getOrNull()
+                llmRef.set(initResult.getOrNull())
                 lastUnavailableReason = null
                 _status.value = AiModelStatus.Ready(AiEngineMode.OnDeviceMediaPipe)
                 true
@@ -149,36 +179,84 @@ class MediaPipeLlmEngine(
     }
 
     override fun stream(history: List<ChatMessage>, prompt: String): Flow<String> = callbackFlow {
-        val engine = llm
-            ?: error("MediaPipeLlmEngine.stream called before isAvailable() returned true")
-        val composed = composePrompt(history, prompt)
-
-        // generateResponseAsync invokes the listener with (partialResult, done) tuples
-        // on a MediaPipe-internal thread. We mirror each partial into the flow channel
-        // and close on `done`. Exceptions from native code surface via trySendBlocking
-        // returning failure; we convert those to a flow error so the provider can
-        // decide whether to fall back to cloud.
-        engine.generateResponseAsync(composed) { partialResult: String, done: Boolean ->
-            val sent = trySend(partialResult)
-            if (sent.isFailure) {
-                close(sent.exceptionOrNull() ?: IllegalStateException("channel send failed"))
-                return@generateResponseAsync
+        // Serialise concurrent stream() calls — MediaPipe's LlmInference has no
+        // per-request cancellation, so running two overlapping streams would
+        // require two engines or fight over one; we pick "wait your turn".
+        streamMutex.lock()
+        // Idempotent release: awaitClose's cleanup and the finally-block both
+        // call this, so a cancellation thrown *before* awaitClose is reached
+        // (e.g. during the suspending modelMutex.withLock call) still releases
+        // the mutex. Without this guard, callbackFlow's producer unwinds before
+        // awaitClose runs and the next stream() would deadlock on streamMutex.
+        var unlocked = false
+        fun releaseStreamLockOnce() {
+            if (!unlocked) {
+                unlocked = true
+                streamMutex.unlock()
             }
-            if (done) close()
         }
+        try {
+            val engine = modelMutex.withLock {
+                // Lazy re-init: if an earlier stream() closed the engine in awaitClose,
+                // rebuild it here on demand so AiEngineProvider.stream() can safely
+                // invoke us back-to-back without the caller having to re-probe. This
+                // also rescues the common "user taps send, cancel, send again" pattern.
+                val cached = llmRef.get()
+                if (cached != null) return@withLock cached
+                val opened = runCatching {
+                    factory.create(
+                        context = context,
+                        modelPath = modelFile.absolutePath,
+                        maxTokens = DEFAULT_MAX_TOKENS,
+                        topK = DEFAULT_TOP_K,
+                        temperature = DEFAULT_TEMPERATURE,
+                    )
+                }.getOrNull() ?: error(
+                    "MediaPipeLlmEngine.stream called before isAvailable() returned true",
+                )
+                llmRef.set(opened)
+                opened
+            }
+            val composed = composePrompt(history, prompt)
 
-        awaitClose {
-            // MediaPipe's LlmInference doesn't expose a cancel(requestId) API in
-            // 0.10.27 — close() tears down the whole session. That's acceptable
-            // here because `stream()` owns the engine's lifetime for a single
-            // request and a cancelled request is a rare user action (stop button).
-            // We null out the reference so the next isAvailable() recreates a
-            // fresh inference context instead of reusing one we just closed.
-            //
-            // Note: this also means a new isAvailable() call is needed after cancel
-            // before the next stream() — handled by AiEngineProvider.retry().
-            runCatching { engine.close() }
-            llm = null
+            // generateResponseAsync invokes the listener with (partialResult, done) tuples
+            // on a MediaPipe-internal thread. We mirror each partial into the flow channel
+            // and close on `done`. Exceptions from native code surface via trySendBlocking
+            // returning failure; we convert those to a flow error so the provider can
+            // decide whether to fall back to cloud.
+            try {
+                engine.generateResponseAsync(composed) { partialResult: String, done: Boolean ->
+                    val sent = trySend(partialResult)
+                    if (sent.isFailure) {
+                        close(sent.exceptionOrNull() ?: IllegalStateException("channel send failed"))
+                        return@generateResponseAsync
+                    }
+                    if (done) close()
+                }
+            } catch (t: Throwable) {
+                // Starting the async call itself failed (e.g. engine already closed).
+                // Close the channel with the error and let awaitClose clean up.
+                close(t)
+            }
+
+            awaitClose {
+                // MediaPipe's LlmInference doesn't expose a cancel(requestId) API in
+                // 0.10.27 — close() tears down the whole session. compareAndSet only
+                // clears llmRef if it still points to *our* engine, so a concurrent
+                // isAvailable() that just installed a replacement is preserved.
+                // runBlocking is deliberately avoided here because awaitClose runs on
+                // an arbitrary MediaPipe-internal thread where suspending is unsafe.
+                runCatching { engine.close() }
+                llmRef.compareAndSet(engine, null)
+                releaseStreamLockOnce()
+            }
+        } finally {
+            // Belt and braces: if a cancellation unwound the producer before
+            // awaitClose ran (e.g. during modelMutex.withLock), the awaitClose
+            // cleanup never fires and streamMutex would stay locked forever.
+            // This finally block makes that impossible — the idempotent guard
+            // above prevents a double-unlock when awaitClose *did* run.
+            releaseStreamLockOnce()
         }
     }
 

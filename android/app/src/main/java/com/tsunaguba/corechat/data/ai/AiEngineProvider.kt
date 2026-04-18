@@ -12,9 +12,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -51,9 +53,10 @@ class AiEngineProvider(
     enum class EngineRoute { AiCore, MediaPipe, Cloud }
 
     /**
-     * Snapshot of the provider's routing decision. `probed*` booleans disambiguate
-     * "not tried yet" from "tried and succeeded" so the combined status can return
-     * Initializing before any probe has completed.
+     * Snapshot of the provider's routing decision. `probeComplete` flips true
+     * once probeChain() finishes for the first time — until then stream() must
+     * wait instead of routing to a stale default. `mpProbed` / `cloudProbed`
+     * capture per-engine probe success for the status-derivation logic.
      */
     private data class ProbeState(
         val route: EngineRoute,
@@ -61,8 +64,14 @@ class AiEngineProvider(
         val cloudReason: UnavailableReason?,
         val mpProbed: Boolean,
         val cloudProbed: Boolean,
+        val probeComplete: Boolean,
     )
 
+    /**
+     * Initial state: no probe has run yet. `route` defaults to AiCore purely so
+     * the data class is non-null; it's never read while probeComplete=false
+     * because stream() waits for completion first (see awaitProbeComplete()).
+     */
     private val probeState = MutableStateFlow(
         ProbeState(
             route = EngineRoute.AiCore,
@@ -70,6 +79,7 @@ class AiEngineProvider(
             cloudReason = null,
             mpProbed = false,
             cloudProbed = false,
+            probeComplete = false,
         ),
     )
 
@@ -87,6 +97,10 @@ class AiEngineProvider(
     ) { aicoreStatus, mpStatus, probe, error ->
         when {
             error != null -> error
+            // Hold Initializing until probeChain() finalises the route, so the UI
+            // never flashes a stale "Ready (AICore)" in the millisecond before the
+            // probe on a Samsung device flips us over to MediaPipe or Cloud.
+            !probe.probeComplete -> AiModelStatus.Initializing
             probe.route == EngineRoute.AiCore -> aicoreStatus
             probe.route == EngineRoute.MediaPipe -> {
                 // MediaPipe's own status already encodes Downloading(progress) and
@@ -127,26 +141,53 @@ class AiEngineProvider(
      * Probe AICore → MediaPipe → Cloud in order, update [probeState] to reflect
      * which route won. Failure reasons are carried along so the UI's
      * UnavailableCard can show a specific hint when the final route is Cloud+failed.
+     *
+     * Writes use [MutableStateFlow.update] so concurrent `probeChain` + `retry()`
+     * + `tryStreamWithFallback` cannot lose updates; each call sees the latest
+     * snapshot before producing the next one.
+     *
+     * Defensive guard: if any engine's isAvailable() throws a non-cancellation
+     * exception (should not happen per AiEngine contract but still) we always
+     * mark probeComplete=true on exit so stream() doesn't suspend indefinitely
+     * inside awaitProbeComplete().
      */
     private suspend fun probeChain() {
+        var completed = false
+        try {
+            probeChainImpl()
+            completed = true
+        } finally {
+            if (!completed) {
+                probeState.update { it.copy(probeComplete = true) }
+            }
+        }
+    }
+
+    private suspend fun probeChainImpl() {
         if (aicore.isAvailable()) {
-            probeState.value = ProbeState(
-                route = EngineRoute.AiCore,
-                mpReason = null,
-                cloudReason = null,
-                mpProbed = false,
-                cloudProbed = false,
-            )
+            probeState.update {
+                ProbeState(
+                    route = EngineRoute.AiCore,
+                    mpReason = null,
+                    cloudReason = null,
+                    mpProbed = false,
+                    cloudProbed = false,
+                    probeComplete = true,
+                )
+            }
             return
         }
         if (mediapipe.isAvailable()) {
-            probeState.value = ProbeState(
-                route = EngineRoute.MediaPipe,
-                mpReason = null,
-                cloudReason = null,
-                mpProbed = true,
-                cloudProbed = false,
-            )
+            probeState.update {
+                ProbeState(
+                    route = EngineRoute.MediaPipe,
+                    mpReason = null,
+                    cloudReason = null,
+                    mpProbed = true,
+                    cloudProbed = false,
+                    probeComplete = true,
+                )
+            }
             return
         }
         // Both on-device engines are unavailable — try cloud and lock in whatever
@@ -154,13 +195,27 @@ class AiEngineProvider(
         // local engine was skipped.
         val mpReason = mediapipe.lastUnavailableReason ?: UnavailableReason.Unknown
         val cloudOk = cloud.isAvailable()
-        probeState.value = ProbeState(
-            route = EngineRoute.Cloud,
-            mpReason = mpReason,
-            cloudReason = if (cloudOk) null else (cloud.lastUnavailableReason ?: UnavailableReason.Unknown),
-            mpProbed = true,
-            cloudProbed = true,
-        )
+        probeState.update {
+            ProbeState(
+                route = EngineRoute.Cloud,
+                mpReason = mpReason,
+                cloudReason = if (cloudOk) null else (cloud.lastUnavailableReason ?: UnavailableReason.Unknown),
+                mpProbed = true,
+                cloudProbed = true,
+                probeComplete = true,
+            )
+        }
+    }
+
+    /**
+     * Suspends until probeChain() has produced at least one finalised result.
+     * Called from [stream] so the very first send after app launch doesn't
+     * silently route to a stale initial `EngineRoute.AiCore` while the probe
+     * is still in flight.
+     */
+    private suspend fun awaitProbeComplete() {
+        if (probeState.value.probeComplete) return
+        probeState.filter { it.probeComplete }.first()
     }
 
     fun stream(history: List<ChatMessage>, prompt: String): Flow<String> = flow {
@@ -169,23 +224,56 @@ class AiEngineProvider(
         // no longer sees a stuck "エラーが発生しました" pill after recovery.
         persistentError.value = null
 
+        // Block until probeChain has committed a route — otherwise the very first
+        // user message after app launch would race the probe and route to the
+        // stale initial EngineRoute.AiCore default.
+        awaitProbeComplete()
+
         val route = probeState.value.route
         val primary = engineForRoute(route)
 
+        // Re-probe the chosen engine right before stream() so transient conditions
+        // (MediaPipe engine closed by a previous stream's awaitClose, AICore
+        // download in progress, etc.) are detected without surfacing as a mid-
+        // stream crash. If the engine is no longer available, walk the chain
+        // before emitting a single token.
+        val primaryReady = try {
+            primary.isAvailable()
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (_: Throwable) {
+            false
+        }
+        if (!primaryReady) {
+            if (!tryStreamWithFallback(history, prompt, from = route, emittedAny = false)) {
+                persistentError.value = AiModelStatus.Error(reason = "stream-failed")
+                error("no engine available in chain from $route")
+            }
+            return@flow
+        }
+
+        var emittedAny = false
         try {
-            emitAll(primary.stream(history, prompt))
+            primary.stream(history, prompt).collect { chunk ->
+                emittedAny = true
+                emit(chunk)
+            }
             return@flow
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
             android.util.Log.w(TAG, "primary ($route) stream failed; attempting fallback", t)
+            // Partial-emit guard: once any token has been delivered to the UI, a
+            // fallback would concatenate a second engine's full response onto the
+            // first engine's truncated prefix — a confusing garbage output. Treat
+            // post-emit failures as terminal and let the caller retry explicitly.
+            if (emittedAny) {
+                persistentError.value = AiModelStatus.Error(reason = "stream-partial-failed")
+                throw t
+            }
             // Fall forward through the rest of the chain. Each `attemptFallback`
             // tries the next engine in order and returns true on success.
-            if (route == EngineRoute.AiCore) {
-                if (tryStreamWithFallback(history, prompt, from = EngineRoute.AiCore)) return@flow
-            } else if (route == EngineRoute.MediaPipe) {
-                if (tryStreamWithFallback(history, prompt, from = EngineRoute.MediaPipe)) return@flow
-            }
+            if (tryStreamWithFallback(history, prompt, from = route, emittedAny = false)) return@flow
             // No further fallback succeeded.
             persistentError.value = AiModelStatus.Error(reason = "stream-failed")
             throw t
@@ -196,12 +284,18 @@ class AiEngineProvider(
      * Walk the priority chain starting *after* [from], trying each engine's
      * `isAvailable()` then `stream()`. Emits into the enclosing [flow] on
      * success. Returns true if some downstream engine succeeded.
+     *
+     * @param emittedAny set by the caller when the primary has already emitted
+     *        at least one token — prevents further fallback to avoid concatenating
+     *        garbage into the UI.
      */
     private suspend fun FlowCollector<String>.tryStreamWithFallback(
         history: List<ChatMessage>,
         prompt: String,
         from: EngineRoute,
+        emittedAny: Boolean,
     ): Boolean {
+        if (emittedAny) return false
         val chain = when (from) {
             EngineRoute.AiCore -> listOf(EngineRoute.MediaPipe, EngineRoute.Cloud)
             EngineRoute.MediaPipe -> listOf(EngineRoute.Cloud)
@@ -218,21 +312,32 @@ class AiEngineProvider(
             }
             if (!available) continue
             // Commit the route change so the status pill updates before we start
-            // the fallback stream.
-            probeState.value = probeState.value.copy(
-                route = next,
-                mpProbed = if (next != EngineRoute.AiCore) true else probeState.value.mpProbed,
-                cloudProbed = if (next == EngineRoute.Cloud) true else probeState.value.cloudProbed,
-                mpReason = if (next == EngineRoute.MediaPipe) null else probeState.value.mpReason,
-                cloudReason = if (next == EngineRoute.Cloud) null else probeState.value.cloudReason,
-            )
+            // the fallback stream. Using update{} to serialise with concurrent
+            // probeChain() / retry() writes.
+            probeState.update { current ->
+                current.copy(
+                    route = next,
+                    mpProbed = if (next != EngineRoute.AiCore) true else current.mpProbed,
+                    cloudProbed = if (next == EngineRoute.Cloud) true else current.cloudProbed,
+                    mpReason = if (next == EngineRoute.MediaPipe) null else current.mpReason,
+                    cloudReason = if (next == EngineRoute.Cloud) null else current.cloudReason,
+                )
+            }
+            var localEmitted = false
             try {
-                emitAll(engine.stream(history, prompt))
+                engine.stream(history, prompt).collect { chunk ->
+                    localEmitted = true
+                    emit(chunk)
+                }
                 return true
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
                 android.util.Log.w(TAG, "fallback ($next) stream failed", t)
+                // Same partial-emit guard as the primary path: once we have sent a
+                // chunk to the collector, a further fallback would mix two engines'
+                // outputs. Stop and let the caller surface the error.
+                if (localEmitted) throw t
                 // continue to the next in the chain
             }
         }

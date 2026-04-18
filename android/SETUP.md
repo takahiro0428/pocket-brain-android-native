@@ -301,6 +301,13 @@ Write-Host "GEMMA_MODEL_SIZE_BYTES=$size"
 
 **3 つ全て**登録してください。いずれかが空だと MediaPipe エンジンは自動的に無効化され、フォールバック動作は従来通り AICore → Cloud のみになります（build 自体は成功）。
 
+> **⚠️ Security Note — `GEMMA_MODEL_URL` の取扱い:** この URL は BuildConfig 経由で APK に平文埋め込みされます（`GEMINI_API_KEY` と同様、§3.1 参照）。Firebase Storage の signed URL（`?alt=media&token=...` 付き）をここに登録すると、**APK を apktool で解析できる人は誰でも 1.5GB モデルを直接ダウンロード可能**になります。推奨対処:
+> 1. テスター向け debug ビルドのみを対象にし、一般公開 APK では本エンジンを無効化（`GEMMA_MODEL_URL` を空で release ビルド）
+> 2. Firebase Storage のトークンを四半期ごとに revoke + 再発行し、`GEMMA_MODEL_URL` Secret を更新
+> 3. 公開配布時は Backend-for-Frontend に移行し、認証済みクライアントにだけ URL を発行する設計に切り替え
+>
+> モデルファイル自体（Gemma 3n E2B の重み）は Google の Terms of Use 遵守の範囲で再配布可能ですが、「あなたの Firebase プロジェクトの帯域を無限に消費される」リスクは別問題として残ります。
+
 ### 7.5 モデル更新・廃止時の対処
 
 - `.litertlm` ファイルを新版に差し替える場合: 同じ URL に上書きアップロードし、`GEMMA_MODEL_SHA256` と `GEMMA_MODEL_SIZE_BYTES` を新値に更新。既存端末は初回起動時に SHA 不一致を検出し再 DL

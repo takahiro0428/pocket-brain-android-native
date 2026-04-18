@@ -117,7 +117,12 @@ jobs:
           GEMMA_MODEL_URL: ${{ secrets.GEMMA_MODEL_URL }}
           GEMMA_MODEL_SHA256: ${{ secrets.GEMMA_MODEL_SHA256 }}
           GEMMA_MODEL_SIZE_BYTES: ${{ secrets.GEMMA_MODEL_SIZE_BYTES }}
+        shell: bash
         run: |
+          # pipefail + errexit so an unexpected failure in printf or cut aborts
+          # the step — same rigor as the keystore-restore step. nounset stays off
+          # (the env vars may legitimately be unset; we branch on -n explicitly).
+          set -eo pipefail
           if [ -n "${GEMMA_MODEL_URL}" ] && [ -n "${GEMMA_MODEL_SHA256}" ] && [ -n "${GEMMA_MODEL_SIZE_BYTES}" ]; then
             printf 'GEMMA_MODEL_URL=%s\n' "${GEMMA_MODEL_URL}" >> local.properties
             printf 'GEMMA_MODEL_SHA256=%s\n' "${GEMMA_MODEL_SHA256}" >> local.properties
