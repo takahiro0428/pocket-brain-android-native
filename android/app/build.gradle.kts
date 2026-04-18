@@ -1,3 +1,4 @@
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
@@ -133,12 +134,15 @@ android {
             // zeroed placeholders so the actual key length / fingerprint never ship in
             // consumer builds — even though the key body itself is still in BuildConfig
             // (see SETUP.md §3.1), there's no reason to expose additional metadata.
+            // Use the top-level `MessageDigest` import — fully-qualified
+            // `java.security.MessageDigest` resolves against the Gradle Kotlin DSL's
+            // `java` project extension inside this scope and fails compilation.
             val geminiKeyHashPrefix: String = if (geminiApiKey.isEmpty()) {
                 ""
             } else {
-                java.security.MessageDigest.getInstance("SHA-256")
+                MessageDigest.getInstance("SHA-256")
                     .digest(geminiApiKey.toByteArray())
-                    .joinToString("") { "%02x".format(it) }
+                    .joinToString("") { b -> "%02x".format(b) }
                     .substring(0, 12)
             }
             buildConfigField("int", "GEMINI_API_KEY_LENGTH", "${geminiApiKey.length}")
