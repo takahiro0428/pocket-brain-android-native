@@ -33,7 +33,8 @@ fun StatusBar(
 ) {
     val (label: String, dot: Color) = when (status) {
         is AiModelStatus.Ready -> when (status.mode) {
-            AiEngineMode.OnDevice -> stringResource(R.string.status_ready_ondevice) to StatusOk
+            AiEngineMode.OnDeviceAiCore -> stringResource(R.string.status_ready_ondevice) to StatusOk
+            AiEngineMode.OnDeviceMediaPipe -> stringResource(R.string.status_ready_mediapipe) to StatusOk
             AiEngineMode.Cloud -> stringResource(R.string.status_ready_cloud) to StatusOk
         }
         is AiModelStatus.Downloading -> {

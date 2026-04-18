@@ -34,7 +34,7 @@ class ChatViewModelTest {
     private fun vm(
         sendFlow: Flow<String> = flowOf("Hello", ", ", "world"),
         statusFlow: MutableStateFlow<AiModelStatus> =
-            MutableStateFlow(AiModelStatus.Ready(AiEngineMode.OnDevice)),
+            MutableStateFlow(AiModelStatus.Ready(AiEngineMode.OnDeviceAiCore)),
         repo: ChatRepository = mockk(relaxed = false) {
             every { status } returns statusFlow
             every { sendMessage(any(), any()) } returns sendFlow

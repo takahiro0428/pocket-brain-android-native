@@ -133,7 +133,9 @@ private fun EmptyState(status: AiModelStatus, modifier: Modifier = Modifier) {
     // Subtitle is mode-aware to avoid claiming "端末内で完結" while actually routing
     // through the cloud — doing so would mislead users about where their messages go.
     val subtitleRes = when {
-        status is AiModelStatus.Ready && status.mode == AiEngineMode.OnDevice ->
+        status is AiModelStatus.Ready && status.mode == AiEngineMode.OnDeviceAiCore ->
+            R.string.empty_state_subtitle_ondevice
+        status is AiModelStatus.Ready && status.mode == AiEngineMode.OnDeviceMediaPipe ->
             R.string.empty_state_subtitle_ondevice
         status is AiModelStatus.Ready && status.mode == AiEngineMode.Cloud ->
             R.string.empty_state_subtitle_cloud

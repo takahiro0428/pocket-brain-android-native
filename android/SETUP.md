@@ -63,6 +63,9 @@ gradle wrapper --gradle-version 8.10.2 --distribution-type bin
 | `DEBUG_KEYSTORE_PASSWORD` | 任意（既定 `android`） | keystore のストアパスワード | §3.2 の手順と合わせて設定 |
 | `DEBUG_KEY_ALIAS` | 任意（既定 `androiddebugkey`） | 鍵エイリアス | §3.2 の手順と合わせて設定 |
 | `DEBUG_KEY_PASSWORD` | 任意（既定 `android`） | 鍵自体のパスワード | §3.2 の手順と合わせて設定 |
+| `GEMMA_MODEL_URL` | 任意（3 つセット） | Gemma 3n E2B モデル（`.litertlm`）の DL 元 URL。3 つ全て設定するとオンデバイス MediaPipe エンジン（AICore 失敗時の優先度 2 フォールバック）が有効化。未設定なら MediaPipe は使わず直接 Cloud へ | §7 の手順で生成・アップロード |
+| `GEMMA_MODEL_SHA256` | 任意（3 つセット） | 同モデルの SHA-256（64 hex 文字） | §7 の手順で計算 |
+| `GEMMA_MODEL_SIZE_BYTES` | 任意（3 つセット） | 同モデルのバイト数（integer）。DL 後の size 検証・事前容量チェックに使用 | §7 の手順で `stat` コマンド等 |
 
 > ※ `TESTERS_EMAILS` と `TESTER_GROUPS` は**少なくとも片方**を設定してください。両方空の場合は Preflight step で early-fail します。
 >
@@ -232,7 +235,7 @@ corechat-v<versionName>-<versionCode>-<buildType>.apk
 
 | 症状 / Symptom | 原因 / Cause | 対処 / Fix |
 |---|---|---|
-| 非対応端末で「AI利用不可」のまま | `GEMINI_API_KEY` が空 / 無効 / 短すぎる / ネットワーク不達 | debug ビルドでは「AIが利用できません」カード下部に原因別メッセージ（「APIキーが設定されていません」「APIキーの形式が不正」「APIキーが無効または権限不足」「ネットワークに接続できません」「AIサーバー応答遅延」）+ 診断ブロック（キー長・SHA-256 先頭・プローブ結果）が表示されます。表示原因に応じて対処してください。Secret を再設定した場合は CI ログの「Verify GEMINI_API_KEY injection」ステップで `length` と `sha256-prefix` を確認（前回の値と一致していれば同じキーが注入されている）|
+| 非対応端末で「AI利用不可」のまま | `GEMINI_API_KEY` が空 / 無効 / 短すぎる / ネットワーク不達 / モデル廃止 | debug ビルドでは「AIが利用できません」カード下部に原因別メッセージ（「APIキーが設定されていません」「APIキーの形式が不正」「APIキーが無効または権限不足」「ネットワークに接続できません」「AIサーバー応答遅延」「利用中のAIモデルが廃止されています」）+ 診断ブロック（キー長・SHA-256 先頭・プローブ結果）が表示されます。表示原因に応じて対処してください。**モデル廃止の場合は `CloudGeminiEngine.DEFAULT_MODEL` を [Gemini API models](https://ai.google.dev/gemini-api/docs/models) で現行の stable モデル名に更新（例: `gemini-1.5-flash` は 2025 年に shutdown 済みで `gemini-2.5-flash` 等へ移行）**。Secret を再設定した場合は CI ログの「Verify GEMINI_API_KEY injection」ステップで `length` と `sha256-prefix` を確認 |
 | `INSTALL_FAILED_UPDATE_INCOMPATIBLE` / インストール時に「アプリがインストールされていません」 | 旧 APK と APK の**署名証明書**が異なる（§3.2 の Secret をローテーションした初回、または旧バージョン = 固定鍵導入前のビルドを既にインストールしている場合のみ発生） | 一度アンインストールしてから再インストール。`./gradlew :app:printDebugCertFingerprint` の出力と CI の「Verify APK signing certificate fingerprint」ログの SHA-1 を突き合わせて原因を特定。§3.2 で固定化済みなので通常の更新では再発しません |
 | APK のインストール時に「アプリがインストールされていません」（versionCode 由来） | 旧 APK と同じ `versionCode` のビルドを当てている | `android/version.properties` の `versionCodeOffset` を確認。CI は `offset + GITHUB_RUN_NUMBER` で単調増加させるため通常問題になりません。ローカルビルドを CI 版の後に入れたい場合は一度アンインストール |
 | ダウンロードした APK 名に `(1)` `(2)` が付く | 過去の配信と同じファイル名を使っている | 本リポジトリでは `corechat-v<versionName>-<versionCode>-<buildType>.apk` 形式にバージョン毎ユニーク化済み。古い `app-debug.apk` を削除してから再ダウンロード |
@@ -241,13 +244,88 @@ corechat-v<versionName>-<versionCode>-<buildType>.apk
 | Preflight で `At least one of TESTER_GROUPS or TESTERS_EMAILS must be set` | 両方の Secret が空 | どちらかを設定（§3.0 参照） |
 | Firebase アップロード `401 / 403` | サービスアカウントのロール不足 or Secret 未設定 | `FIREBASE_SERVICE_ACCOUNT_JSON` を設定し、`Firebase App Distribution Admin` ロールを付与 |
 | AICore 初回ダウンロードが完了しない | ストレージ不足 / ネットワーク不安定 | Wi-Fi 接続、10GB 以上の空き確認 |
+| Gemma モデル DL が失敗する / 「ネットワーク接続をご確認ください」 | Firebase Storage の URL 期限切れ / ネットワーク不通 / §7 の Secret 未登録 | §7 で URL を再発行して Secret 更新、またはモバイル回線から Wi-Fi に切替 |
+| 「端末の空き容量が不足しています (約2GB必要)」 | `filesDir` の空き容量が約 2GB 未満 | 不要なキャッシュやアプリを削除。Samsung/Pixel の場合は 設定 → ストレージ → 空き容量を確認 |
 | `gradle wrapper --gradle-version` が失敗 | システム Gradle 未インストール | [Gradle 公式](https://gradle.org/install/) からインストール |
 
 ---
 
-## 7. 参考 / References
+## 7. Gemma 3n モデルの配布 / On-Device Model Distribution
+
+優先度 2 のオンデバイスエンジン（MediaPipe + Gemma 3n E2B）を有効化する手順。このエンジンは AICore が `Required LLM feature not found` 等で使えない端末（多くの Samsung/OEM デバイス）で自動的に利用されます。
+
+### 7.1 モデル選定と根拠
+
+| モデル | サイズ (4bit 量子化) | MediaPipe 対応 | 備考 |
+|---|---|---|---|
+| **Gemma 3n E2B** | ~1.5-2 GB | ✅ `.litertlm` 形式 | **採用。** 2025 発表、LiteRT 最適化、モバイル RAM 4GB+ で動作 |
+| Gemma 3 1B | ~500-700 MB | ✅ | 軽量代替案。性能は E2B より劣る |
+| Gemma 4 | — | ❌ AICore 専用 | MediaPipe 未対応（2026 年 4 月時点） |
+
+将来 Gemma 4/5 が MediaPipe に降ってきたら、`MediaPipeLlmEngine.DEFAULT_MODEL_SUBPATH` と `GEMMA_MODEL_URL` を差し替えるだけで切り替え可能。
+
+### 7.2 モデルファイル入手（オペレーター作業・1 回のみ）
+
+1. HuggingFace の [`litert-community`](https://huggingface.co/litert-community) 組織から `gemma-3n-e2b-it-int4` 系リポジトリを開き、`.litertlm` ファイルをダウンロード（ブラウザ DL 可、~1.5GB）
+2. ライセンス確認: [Gemma Terms of Use](https://ai.google.dev/gemma/terms) に従う（テスター向け社内配布なら原則 OK）
+
+### 7.3 Firebase Storage へのアップロード（PowerShell）
+
+```powershell
+# 前提: Firebase CLI (npm i -g firebase-tools) がインストール済み・ログイン済み
+
+# 1. ファイルを Firebase Storage にアップロード（パブリック読み取り可のバケット想定）
+firebase --project pocket-brain-android-nat-de152 storage:upload `
+  --folder "models" `
+  .\gemma-3n-e2b-it-int4.litertlm
+
+# 2. 公開 URL を生成（Firebase Console → Storage → 該当ファイル → トークン付き URL をコピー、
+#    あるいは gsutil signurl で署名付き URL を発行）
+
+# 3. SHA-256 とサイズを計算
+$sha = (Get-FileHash .\gemma-3n-e2b-it-int4.litertlm -Algorithm SHA256).Hash.ToLower()
+$size = (Get-Item .\gemma-3n-e2b-it-int4.litertlm).Length
+Write-Host "GEMMA_MODEL_SHA256=$sha"
+Write-Host "GEMMA_MODEL_SIZE_BYTES=$size"
+```
+
+### 7.4 GitHub Secrets 登録
+
+リポジトリ Settings → Secrets and variables → Actions で以下を登録:
+
+| Secret 名 | 値の例 |
+|---|---|
+| `GEMMA_MODEL_URL` | `https://firebasestorage.googleapis.com/v0/b/.../models%2Fgemma-3n-e2b-it-int4.litertlm?alt=media&token=...` |
+| `GEMMA_MODEL_SHA256` | `a1b2c3...` (64 hex 文字) |
+| `GEMMA_MODEL_SIZE_BYTES` | `1536870912` 等 |
+
+**3 つ全て**登録してください。いずれかが空だと MediaPipe エンジンは自動的に無効化され、フォールバック動作は従来通り AICore → Cloud のみになります（build 自体は成功）。
+
+> **⚠️ Security Note — `GEMMA_MODEL_URL` の取扱い:** この URL は BuildConfig 経由で APK に平文埋め込みされます（`GEMINI_API_KEY` と同様、§3.1 参照）。Firebase Storage の signed URL（`?alt=media&token=...` 付き）をここに登録すると、**APK を apktool で解析できる人は誰でも 1.5GB モデルを直接ダウンロード可能**になります。推奨対処:
+> 1. テスター向け debug ビルドのみを対象にし、一般公開 APK では本エンジンを無効化（`GEMMA_MODEL_URL` を空で release ビルド）
+> 2. Firebase Storage のトークンを四半期ごとに revoke + 再発行し、`GEMMA_MODEL_URL` Secret を更新
+> 3. 公開配布時は Backend-for-Frontend に移行し、認証済みクライアントにだけ URL を発行する設計に切り替え
+>
+> モデルファイル自体（Gemma 3n E2B の重み）は Google の Terms of Use 遵守の範囲で再配布可能ですが、「あなたの Firebase プロジェクトの帯域を無限に消費される」リスクは別問題として残ります。
+
+### 7.5 モデル更新・廃止時の対処
+
+- `.litertlm` ファイルを新版に差し替える場合: 同じ URL に上書きアップロードし、`GEMMA_MODEL_SHA256` と `GEMMA_MODEL_SIZE_BYTES` を新値に更新。既存端末は初回起動時に SHA 不一致を検出し再 DL
+- モデルが廃止された場合（URL が 404 になる）: `UnavailableCard` に「Gemmaモデルのダウンロードに失敗しました」と表示される。Cloud fallback は引き続き動作
+
+### 7.6 既知の制約
+
+- 初回 DL 時間: Wi-Fi で 5-10 分（1.5GB）。モバイル回線での DL は技術的に可能だがテスター向けに非推奨
+- 必要 RAM: 2GB 以上（E2B モデル）。低 RAM 端末では `ModelInitializationFailed` で Cloud フォールバックへ
+- APK サイズ: MediaPipe ネイティブライブラリ同梱で +20-40MB。ABI splits（arm64-v8a のみ）で緩和可能 — 現状は全 ABI 同梱
+
+---
+
+## 8. 参考 / References
 
 - Firebase App Distribution: https://firebase.google.com/docs/app-distribution
 - Google AI Edge (AICore) SDK: https://ai.google.dev/edge/generative-on-device/android
+- MediaPipe LLM Inference (Android): https://ai.google.dev/edge/mediapipe/solutions/genai/llm_inference/android
+- Gemma models (HuggingFace): https://huggingface.co/litert-community
 - Gemini API (cloud fallback): https://ai.google.dev/gemini-api/docs
 - wzieba/Firebase-Distribution-Github-Action: https://github.com/wzieba/Firebase-Distribution-Github-Action

@@ -5,6 +5,10 @@ import com.tsunaguba.corechat.BuildConfig
 import com.tsunaguba.corechat.data.ai.AiCoreEngine
 import com.tsunaguba.corechat.data.ai.AiEngineProvider
 import com.tsunaguba.corechat.data.ai.CloudGeminiEngine
+import com.tsunaguba.corechat.data.ai.DefaultLlmEngineFactory
+import com.tsunaguba.corechat.data.ai.GemmaModelDownloader
+import com.tsunaguba.corechat.data.ai.LlmEngineFactory
+import com.tsunaguba.corechat.data.ai.MediaPipeLlmEngine
 import com.tsunaguba.corechat.data.repository.ChatRepositoryImpl
 import com.tsunaguba.corechat.domain.repository.ChatRepository
 import dagger.Binds
@@ -13,12 +17,14 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import java.util.concurrent.TimeUnit
+import javax.inject.Qualifier
+import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import javax.inject.Qualifier
-import javax.inject.Singleton
+import okhttp3.OkHttpClient
 
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
@@ -54,13 +60,56 @@ object AppModule {
     fun provideCloudGeminiEngine(): CloudGeminiEngine =
         CloudGeminiEngine(apiKey = BuildConfig.GEMINI_API_KEY)
 
+    /**
+     * Shared OkHttp client for the Gemma download. Connection/read timeouts are
+     * generous because the server-side signed URL (e.g. Firebase Storage) can
+     * take seconds to establish and the model download itself runs for minutes;
+     * callTimeout is left unbounded for that reason.
+     */
+    @Provides
+    @Singleton
+    fun provideOkHttpClient(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .build()
+
+    @Provides
+    @Singleton
+    fun provideGemmaModelDownloader(
+        @ApplicationContext context: Context,
+        http: OkHttpClient,
+    ): GemmaModelDownloader = GemmaModelDownloader(
+        context = context,
+        httpClient = http,
+        expectedSha256 = BuildConfig.GEMMA_MODEL_SHA256,
+    )
+
+    @Provides
+    @Singleton
+    fun provideLlmEngineFactory(): LlmEngineFactory = DefaultLlmEngineFactory()
+
+    @Provides
+    @Singleton
+    fun provideMediaPipeLlmEngine(
+        @ApplicationContext context: Context,
+        downloader: GemmaModelDownloader,
+        factory: LlmEngineFactory,
+    ): MediaPipeLlmEngine = MediaPipeLlmEngine(
+        context = context,
+        downloader = downloader,
+        factory = factory,
+        expectedSizeBytes = BuildConfig.GEMMA_MODEL_SIZE_BYTES,
+        modelUrl = BuildConfig.GEMMA_MODEL_URL,
+    )
+
     @Provides
     @Singleton
     fun provideAiEngineProvider(
         aicore: AiCoreEngine,
+        mediapipe: MediaPipeLlmEngine,
         cloud: CloudGeminiEngine,
         @ApplicationScope scope: CoroutineScope,
-    ): AiEngineProvider = AiEngineProvider(aicore, cloud, scope)
+    ): AiEngineProvider = AiEngineProvider(aicore, mediapipe, cloud, scope)
 }
 
 @Module

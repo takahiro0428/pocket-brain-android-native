@@ -4,6 +4,7 @@
 
     <!-- Status pill -->
     <string name="status_ready_ondevice">オンデバイスAI 準備完了</string>
+    <string name="status_ready_mediapipe">ローカルAI (Gemma) 準備完了</string>
     <string name="status_ready_cloud">クラウドAI 準備完了</string>
     <string name="status_downloading">モデル取得中 %1$d%%</string>
     <string name="status_error">エラーが発生しました</string>
@@ -31,6 +32,11 @@
     <string name="unavailable_reason_api_key_missing">APIキーが設定されていません。アプリの配信元に連絡してください。</string>
     <string name="unavailable_reason_api_key_malformed">APIキーの形式が不正です。配信元に再ビルドを依頼してください。</string>
     <string name="unavailable_reason_api_key_rejected">APIキーが無効または権限不足です。期限切れや revoke の可能性があります。</string>
+    <string name="unavailable_reason_model_not_found">利用中のAIモデルが廃止されています。アプリの更新版をお待ちください。</string>
+    <string name="unavailable_reason_model_download_failed">Gemmaモデルのダウンロードに失敗しました。ネットワーク接続をご確認ください。</string>
+    <string name="unavailable_reason_model_checksum_mismatch">Gemmaモデルファイルが破損しています。再試行で再ダウンロードされます。</string>
+    <string name="unavailable_reason_insufficient_storage">端末の空き容量が不足しています (約2GB必要)。不要なデータを削除してください。</string>
+    <string name="unavailable_reason_model_init_failed">ローカルAIの初期化に失敗しました。ネットワーク経由のAIに切り替わります。</string>
     <string name="unavailable_reason_network">ネットワークに接続できません。Wi-Fi / モバイルデータをご確認ください。</string>
     <string name="unavailable_reason_timeout">AIサーバーの応答が遅延しています。時間をおいて再試行してください。</string>
     <string name="action_retry_full">再検出して再試行</string>
