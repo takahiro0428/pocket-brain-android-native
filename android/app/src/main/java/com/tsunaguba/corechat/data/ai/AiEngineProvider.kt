@@ -7,6 +7,7 @@ import com.tsunaguba.corechat.domain.model.UnavailableReason
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -17,31 +18,61 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
- * Routes requests to the best available engine:
- *   1. AICore (on-device) if the device reports it available
- *   2. Cloud Gemini otherwise
+ * Routes requests to the best available engine in priority order:
+ *   1. AICore (on-device Gemini Nano) — fastest, most private
+ *   2. MediaPipe Gemma (on-device LiteRT-LM) — fallback for devices without
+ *      Gemini Nano feature IDs (e.g. many Samsung/OEM phones)
+ *   3. Cloud Gemini — last-resort network call
  *
- * If an AICore stream fails mid-flight, a single cloud-fallback retry is attempted
- * for that request without losing the user's prompt.
+ * If an on-device stream fails mid-flight, we attempt to fall forward through
+ * the chain (aicore → mediapipe → cloud) for that single request so the user's
+ * prompt isn't lost to a transient engine failure.
  *
  * ### Status SoT
- * Status is derived from two sources via [combine]: the underlying AICore engine's
- * status and an internal `useCloudFlow`. When `useCloudFlow == true` we ignore the
- * AICore signal and expose `Ready(Cloud)` (or `Unavailable` if cloud itself is
- * unusable). This keeps the status state machine single-sourced.
+ * The combined status flow derives from 4 inputs:
+ *  - `aicore.status` — AICore-specific state (Downloading/Ready/Error)
+ *  - `mediapipe.status` — MediaPipe-specific state (covers Gemma download progress)
+ *  - `probeState` — which route won the priority race, plus the rejection reasons
+ *    from every route we tried (so retry can re-use that info for the UI)
+ *  - `persistentError` — single-request terminal error that outlives the stream
+ *
+ * Why [ProbeState] is a single data class: we tried a naive 6-input combine but
+ * Kotlin's `combine(vararg)` overload erases types to `Array<Any?>` and we'd
+ * lose compile-time safety. Packing the route + reasons into one value keeps
+ * the status-derivation block type-safe.
  */
 class AiEngineProvider(
     private val aicore: AiCoreEngine,
+    private val mediapipe: MediaPipeLlmEngine,
     private val cloud: CloudGeminiEngine,
     externalScope: CoroutineScope,
 ) {
 
-    private val useCloudFlow = MutableStateFlow(false)
-    // Cloud probe result: null = probe-not-attempted-yet OR probe-succeeded.
-    // The sibling `cloudProbed` flow disambiguates the two so the combined status
-    // can emit Initializing vs Ready(Cloud) without ambiguity.
-    private val cloudReason = MutableStateFlow<UnavailableReason?>(null)
-    private val cloudProbed = MutableStateFlow(false)
+    enum class EngineRoute { AiCore, MediaPipe, Cloud }
+
+    /**
+     * Snapshot of the provider's routing decision. `probed*` booleans disambiguate
+     * "not tried yet" from "tried and succeeded" so the combined status can return
+     * Initializing before any probe has completed.
+     */
+    private data class ProbeState(
+        val route: EngineRoute,
+        val mpReason: UnavailableReason?,
+        val cloudReason: UnavailableReason?,
+        val mpProbed: Boolean,
+        val cloudProbed: Boolean,
+    )
+
+    private val probeState = MutableStateFlow(
+        ProbeState(
+            route = EngineRoute.AiCore,
+            mpReason = null,
+            cloudReason = null,
+            mpProbed = false,
+            cloudProbed = false,
+        ),
+    )
+
     // Persistent error override — set when a stream call permanently fails
     // (no fallback possible). Cleared at the start of every `stream()` attempt and
     // at the start of every `retry()`, so a successful recovery automatically
@@ -50,17 +81,25 @@ class AiEngineProvider(
 
     val status: StateFlow<AiModelStatus> = combine(
         aicore.status,
-        useCloudFlow,
-        cloudReason,
-        cloudProbed,
+        mediapipe.status,
+        probeState,
         persistentError,
-    ) { aicoreStatus, useCloud, reason, probed, error ->
+    ) { aicoreStatus, mpStatus, probe, error ->
         when {
             error != null -> error
-            !useCloud -> aicoreStatus
-            !probed -> AiModelStatus.Initializing
-            reason == null -> AiModelStatus.Ready(AiEngineMode.Cloud)
-            else -> AiModelStatus.Unavailable(reason)
+            probe.route == EngineRoute.AiCore -> aicoreStatus
+            probe.route == EngineRoute.MediaPipe -> {
+                // MediaPipe's own status already encodes Downloading(progress) and
+                // Ready(OnDeviceMediaPipe) / Unavailable(reason). Relay it directly
+                // so the provider doesn't duplicate its state machine.
+                mpStatus
+            }
+            probe.route == EngineRoute.Cloud -> {
+                if (!probe.cloudProbed) AiModelStatus.Initializing
+                else if (probe.cloudReason == null) AiModelStatus.Ready(AiEngineMode.Cloud)
+                else AiModelStatus.Unavailable(probe.cloudReason)
+            }
+            else -> AiModelStatus.Initializing
         }
     }.stateIn(
         scope = externalScope,
@@ -70,31 +109,58 @@ class AiEngineProvider(
 
     init {
         externalScope.launch {
-            val aicoreOk = aicore.isAvailable()
-            if (!aicoreOk) {
-                val cloudOk = cloud.isAvailable()
-                cloudReason.value = if (cloudOk) null else (cloud.lastUnavailableReason ?: UnavailableReason.Unknown)
-                cloudProbed.value = true
-                useCloudFlow.value = true
-            }
+            probeChain()
         }
     }
 
     /**
-     * Explicit retry entry point (e.g. from a "再試行" UI button). Re-probes AICore;
-     * if it succeeds, we revert to on-device routing for the next request.
+     * Explicit retry entry point (e.g. from a "再試行" UI button). Re-probes the
+     * full chain from AICore down. If any earlier-priority engine recovers we
+     * switch back to it for the next request.
      */
     suspend fun retry() {
         persistentError.value = null
-        val aicoreOk = aicore.isAvailable()
-        if (aicoreOk) {
-            useCloudFlow.value = false
-        } else {
-            val cloudOk = cloud.isAvailable()
-            cloudReason.value = if (cloudOk) null else (cloud.lastUnavailableReason ?: UnavailableReason.Unknown)
-            cloudProbed.value = true
-            useCloudFlow.value = true
+        probeChain()
+    }
+
+    /**
+     * Probe AICore → MediaPipe → Cloud in order, update [probeState] to reflect
+     * which route won. Failure reasons are carried along so the UI's
+     * UnavailableCard can show a specific hint when the final route is Cloud+failed.
+     */
+    private suspend fun probeChain() {
+        if (aicore.isAvailable()) {
+            probeState.value = ProbeState(
+                route = EngineRoute.AiCore,
+                mpReason = null,
+                cloudReason = null,
+                mpProbed = false,
+                cloudProbed = false,
+            )
+            return
         }
+        if (mediapipe.isAvailable()) {
+            probeState.value = ProbeState(
+                route = EngineRoute.MediaPipe,
+                mpReason = null,
+                cloudReason = null,
+                mpProbed = true,
+                cloudProbed = false,
+            )
+            return
+        }
+        // Both on-device engines are unavailable — try cloud and lock in whatever
+        // result we get. We keep mpReason so a later UI surface can show why the
+        // local engine was skipped.
+        val mpReason = mediapipe.lastUnavailableReason ?: UnavailableReason.Unknown
+        val cloudOk = cloud.isAvailable()
+        probeState.value = ProbeState(
+            route = EngineRoute.Cloud,
+            mpReason = mpReason,
+            cloudReason = if (cloudOk) null else (cloud.lastUnavailableReason ?: UnavailableReason.Unknown),
+            mpProbed = true,
+            cloudProbed = true,
+        )
     }
 
     fun stream(history: List<ChatMessage>, prompt: String): Flow<String> = flow {
@@ -102,48 +168,81 @@ class AiEngineProvider(
         // also fails, the catch block below re-sets it; if it succeeds, the user
         // no longer sees a stuck "エラーが発生しました" pill after recovery.
         persistentError.value = null
-        val primary = if (useCloudFlow.value) cloud else aicore
+
+        val route = probeState.value.route
+        val primary = engineForRoute(route)
+
         try {
             emitAll(primary.stream(history, prompt))
+            return@flow
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
-            // Referential equality is safer than string comparison since both engines are
-            // singletons held by the provider.
-            val eligibleForFallback = primary === aicore && cloud.isAvailable()
-            if (!eligibleForFallback) {
-                android.util.Log.w(TAG, "stream failed with no eligible fallback", t)
-                // Surface as persistent error so the UI shows "エラーが発生しました"
-                // and the send button stays disabled until retry() succeeds.
-                persistentError.value = AiModelStatus.Error("stream-failed")
-                throw t
+            android.util.Log.w(TAG, "primary ($route) stream failed; attempting fallback", t)
+            // Fall forward through the rest of the chain. Each `attemptFallback`
+            // tries the next engine in order and returns true on success.
+            if (route == EngineRoute.AiCore) {
+                if (tryStreamWithFallback(history, prompt, from = EngineRoute.AiCore)) return@flow
+            } else if (route == EngineRoute.MediaPipe) {
+                if (tryStreamWithFallback(history, prompt, from = EngineRoute.MediaPipe)) return@flow
             }
-            android.util.Log.w(TAG, "primary stream failed; switching to cloud fallback", t)
-            // `cloud.isAvailable()` returned true above, so reflect that authoritative
-            // probe into the state flow. Atomic enough: both writes target distinct flows
-            // and the combine handles any transient interleaving safely.
-            cloudReason.value = null
-            cloudProbed.value = true
-            useCloudFlow.value = true
-            try {
-                emitAll(cloud.stream(history, prompt))
+            // No further fallback succeeded.
+            persistentError.value = AiModelStatus.Error(reason = "stream-failed")
+            throw t
+        }
+    }
+
+    /**
+     * Walk the priority chain starting *after* [from], trying each engine's
+     * `isAvailable()` then `stream()`. Emits into the enclosing [flow] on
+     * success. Returns true if some downstream engine succeeded.
+     */
+    private suspend fun FlowCollector<String>.tryStreamWithFallback(
+        history: List<ChatMessage>,
+        prompt: String,
+        from: EngineRoute,
+    ): Boolean {
+        val chain = when (from) {
+            EngineRoute.AiCore -> listOf(EngineRoute.MediaPipe, EngineRoute.Cloud)
+            EngineRoute.MediaPipe -> listOf(EngineRoute.Cloud)
+            EngineRoute.Cloud -> emptyList()
+        }
+        for (next in chain) {
+            val engine = engineForRoute(next)
+            val available = try {
+                engine.isAvailable()
             } catch (ce: CancellationException) {
                 throw ce
-            } catch (cloudErr: Throwable) {
-                android.util.Log.w(TAG, "cloud fallback also failed", cloudErr)
-                // Probe said "usable" but the real stream failed — force a re-probe on
-                // the next retry() so we don't lie about readiness again.
-                //
-                // Order note: the intermediate combine state (probed=false, reason=null)
-                // would normally render as Initializing, but persistentError is set
-                // below and takes precedence in the `when` block, so the user sees
-                // Error immediately instead of a brief Initializing flash.
-                cloudProbed.value = false
-                cloudReason.value = null
-                persistentError.value = AiModelStatus.Error("cloud-fallback-failed")
-                throw cloudErr
+            } catch (_: Throwable) {
+                false
+            }
+            if (!available) continue
+            // Commit the route change so the status pill updates before we start
+            // the fallback stream.
+            probeState.value = probeState.value.copy(
+                route = next,
+                mpProbed = if (next != EngineRoute.AiCore) true else probeState.value.mpProbed,
+                cloudProbed = if (next == EngineRoute.Cloud) true else probeState.value.cloudProbed,
+                mpReason = if (next == EngineRoute.MediaPipe) null else probeState.value.mpReason,
+                cloudReason = if (next == EngineRoute.Cloud) null else probeState.value.cloudReason,
+            )
+            try {
+                emitAll(engine.stream(history, prompt))
+                return true
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                android.util.Log.w(TAG, "fallback ($next) stream failed", t)
+                // continue to the next in the chain
             }
         }
+        return false
+    }
+
+    private fun engineForRoute(route: EngineRoute): AiEngine = when (route) {
+        EngineRoute.AiCore -> aicore
+        EngineRoute.MediaPipe -> mediapipe
+        EngineRoute.Cloud -> cloud
     }
 
     private companion object {

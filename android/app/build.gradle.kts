@@ -21,6 +21,25 @@ val geminiApiKey: String = run {
     fromFile ?: System.getenv("GEMINI_API_KEY") ?: ""
 }
 
+// Gemma model distribution config (priority-2 on-device LLM). URL, SHA-256, and
+// byte size are loaded from local.properties or CI env vars — identical pattern
+// to GEMINI_API_KEY. Empty values make the MediaPipe engine report Unavailable
+// at runtime so the provider falls back to cloud; the build still succeeds.
+// See android/SETUP.md §7 for how to host the model on Firebase Storage and
+// compute the SHA-256.
+private fun readLocalProperty(name: String): String {
+    val propsFile = rootProject.file("local.properties")
+    val fromFile = if (propsFile.exists()) {
+        Properties().apply { propsFile.inputStream().use { load(it) } }
+            .getProperty(name)
+            ?.takeIf { it.isNotBlank() }
+    } else null
+    return fromFile ?: System.getenv(name) ?: ""
+}
+val gemmaModelUrl: String = readLocalProperty("GEMMA_MODEL_URL")
+val gemmaModelSha256: String = readLocalProperty("GEMMA_MODEL_SHA256")
+val gemmaModelSizeBytes: Long = readLocalProperty("GEMMA_MODEL_SIZE_BYTES").toLongOrNull() ?: 0L
+
 // Debug signing: the keystore is restored from GitHub Secret DEBUG_KEYSTORE_B64 on CI
 // and committed-out locally (*.keystore is .gitignore'd). Without a fixed keystore,
 // every CI runner generates a fresh ~/.android/debug.keystore so the APK's signing
@@ -100,6 +119,14 @@ android {
         vectorDrawables { useSupportLibrary = true }
 
         buildConfigField("String", "GEMINI_API_KEY", "\"${geminiApiKey}\"")
+
+        // Gemma model download metadata — consumed by GemmaModelDownloader at first
+        // launch. Empty URL disables the MediaPipe engine cleanly (engine reports
+        // Unavailable and the provider routes to cloud). SHA-256 is verified after
+        // download to detect tampering or truncated transfers.
+        buildConfigField("String", "GEMMA_MODEL_URL", "\"${gemmaModelUrl}\"")
+        buildConfigField("String", "GEMMA_MODEL_SHA256", "\"${gemmaModelSha256}\"")
+        buildConfigField("long", "GEMMA_MODEL_SIZE_BYTES", "${gemmaModelSizeBytes}L")
     }
 
     // Stamp the version + buildType into the APK filename so Firebase-distributed
@@ -242,8 +269,14 @@ dependencies {
 
     // On-device Gemini Nano via AICore (primary engine)
     implementation(libs.google.ai.edge.aicore)
-    // Cloud Gemini (fallback when AICore unavailable)
+    // On-device Gemma via MediaPipe LiteRT-LM (secondary engine, used when AICore
+    // is unavailable — e.g. Samsung devices that don't ship the Gemini Nano
+    // feature ID even though the AICore APK is installed).
+    implementation(libs.mediapipe.tasks.genai)
+    // Cloud Gemini (tertiary fallback when both on-device engines are unavailable)
     implementation(libs.google.ai.generativeai)
+    // HTTP client for streaming the Gemma model download (~1.5GB).
+    implementation(libs.okhttp)
 
     debugImplementation(libs.bundles.compose.debug)
 
@@ -251,4 +284,5 @@ dependencies {
     testImplementation(libs.mockk)
     testImplementation(libs.turbine)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
 }

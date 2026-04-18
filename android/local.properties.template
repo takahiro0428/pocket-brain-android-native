@@ -9,6 +9,14 @@
 # Obtain a key from https://aistudio.google.com/app/apikey
 GEMINI_API_KEY=
 
+# Optional: Gemma on-device model distribution (MediaPipe path).
+# All three MUST be set together to enable the priority-2 on-device engine. Leave blank
+# to skip MediaPipe — the provider will route AICore -> Cloud as before. See SETUP.md §7
+# for the operator workflow (download model, upload to Firebase Storage, compute SHA256).
+GEMMA_MODEL_URL=
+GEMMA_MODEL_SHA256=
+GEMMA_MODEL_SIZE_BYTES=
+
 # Note: debug keystore credentials are NOT read from this file. build.gradle.kts pulls
 # DEBUG_KEYSTORE_PASSWORD / DEBUG_KEY_ALIAS / DEBUG_KEY_PASSWORD from environment
 # variables only (so CI GitHub Secrets can override without committing defaults).

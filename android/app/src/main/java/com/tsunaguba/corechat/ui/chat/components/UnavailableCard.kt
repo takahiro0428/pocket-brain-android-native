@@ -83,6 +83,10 @@ private fun bodyFor(status: AiModelStatus): Int {
         UnavailableReason.ApiKeyMalformed -> R.string.unavailable_reason_api_key_malformed
         UnavailableReason.ApiKeyRejected -> R.string.unavailable_reason_api_key_rejected
         UnavailableReason.ModelNotFound -> R.string.unavailable_reason_model_not_found
+        UnavailableReason.ModelDownloadFailed -> R.string.unavailable_reason_model_download_failed
+        UnavailableReason.ModelChecksumMismatch -> R.string.unavailable_reason_model_checksum_mismatch
+        UnavailableReason.InsufficientStorage -> R.string.unavailable_reason_insufficient_storage
+        UnavailableReason.ModelInitializationFailed -> R.string.unavailable_reason_model_init_failed
         UnavailableReason.NetworkUnreachable -> R.string.unavailable_reason_network
         UnavailableReason.ProbeTimeout -> R.string.unavailable_reason_timeout
         UnavailableReason.Unknown, null -> R.string.unavailable_card_body

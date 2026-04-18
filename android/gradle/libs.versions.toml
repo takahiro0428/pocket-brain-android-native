@@ -12,6 +12,8 @@ coroutines = "1.8.1"
 firebaseAppDistribution = "5.0.0"
 aicore = "0.0.1-exp02"
 generativeai = "0.9.0"
+mediapipeGenai = "0.10.27"
+okhttp = "4.12.0"
 junit = "4.13.2"
 mockk = "1.13.12"
 turbine = "1.1.0"
@@ -44,6 +46,12 @@ kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutine
 # AI
 google-ai-edge-aicore = { module = "com.google.ai.edge.aicore:aicore", version.ref = "aicore" }
 google-ai-generativeai = { module = "com.google.ai.client.generativeai:generativeai", version.ref = "generativeai" }
+# On-device LLM via MediaPipe LiteRT-LM runtime. Used as priority-2 fallback when
+# AICore is unavailable (e.g. Samsung devices lacking Gemini Nano feature IDs).
+mediapipe-tasks-genai = { module = "com.google.mediapipe:tasks-genai", version.ref = "mediapipeGenai" }
+# HTTP client for streaming Gemma model download (1.5GB+, progress + resume).
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+okhttp-mockwebserver = { module = "com.squareup.okhttp3:mockwebserver", version.ref = "okhttp" }
 
 # Test
 junit = { module = "junit:junit", version.ref = "junit" }

@@ -14,8 +14,8 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -34,6 +34,22 @@ class AiEngineProviderTest {
         coEvery { it.isAvailable() } returns available
     }
 
+    /**
+     * Default MediaPipe mock — available=false so the legacy 2-engine tests
+     * (AICore <-> Cloud) keep their old behaviour: MediaPipe is skipped and
+     * fallback continues straight through to cloud.
+     */
+    private fun mediapipe(
+        available: Boolean = false,
+        reason: UnavailableReason = UnavailableReason.ModelInitializationFailed,
+        status: MutableStateFlow<AiModelStatus> = MutableStateFlow(AiModelStatus.Initializing),
+    ): MediaPipeLlmEngine = mockk<MediaPipeLlmEngine>(relaxed = false).also {
+        every { it.id } returns MediaPipeLlmEngine.ENGINE_ID
+        every { it.status } returns status
+        coEvery { it.isAvailable() } returns available
+        every { it.lastUnavailableReason } returns if (available) null else reason
+    }
+
     private fun cloud(
         available: Boolean,
         reason: UnavailableReason = UnavailableReason.Unknown,
@@ -41,29 +57,44 @@ class AiEngineProviderTest {
         mockk<CloudGeminiEngine>(relaxed = false).also {
             every { it.id } returns "cloud-gemini"
             coEvery { it.isAvailable() } returns available
-            // The provider reads `lastUnavailableReason` right after a false probe
-            // result to surface a reason-specific UI message.
             every { it.lastUnavailableReason } returns if (available) null else reason
         }
 
     @Test
-    fun `aicore available yields on-device mode (useCloud=false)`() = runTest {
+    fun `aicore available yields on-device mode`() = runTest {
         val aicoreStatus = MutableStateFlow<AiModelStatus>(
-            AiModelStatus.Ready(AiEngineMode.OnDevice),
+            AiModelStatus.Ready(AiEngineMode.OnDeviceAiCore),
         )
         val provider = AiEngineProvider(
             aicore = aicore(available = true, status = aicoreStatus),
+            mediapipe = mediapipe(),
             cloud = cloud(available = true),
             externalScope = TestScope(UnconfinedTestDispatcher(testScheduler)),
         )
         advanceUntilIdle()
-        assertEquals(AiModelStatus.Ready(AiEngineMode.OnDevice), provider.status.first())
+        assertEquals(AiModelStatus.Ready(AiEngineMode.OnDeviceAiCore), provider.status.first())
     }
 
     @Test
-    fun `aicore unavailable but cloud available yields Ready(Cloud)`() = runTest {
+    fun `aicore unavailable but mediapipe available yields OnDeviceMediaPipe`() = runTest {
+        val mpStatus = MutableStateFlow<AiModelStatus>(
+            AiModelStatus.Ready(AiEngineMode.OnDeviceMediaPipe),
+        )
         val provider = AiEngineProvider(
             aicore = aicore(available = false),
+            mediapipe = mediapipe(available = true, status = mpStatus),
+            cloud = cloud(available = true),
+            externalScope = TestScope(UnconfinedTestDispatcher(testScheduler)),
+        )
+        advanceUntilIdle()
+        assertEquals(AiModelStatus.Ready(AiEngineMode.OnDeviceMediaPipe), provider.status.first())
+    }
+
+    @Test
+    fun `aicore and mediapipe unavailable but cloud available yields Ready(Cloud)`() = runTest {
+        val provider = AiEngineProvider(
+            aicore = aicore(available = false),
+            mediapipe = mediapipe(available = false),
             cloud = cloud(available = true),
             externalScope = TestScope(UnconfinedTestDispatcher(testScheduler)),
         )
@@ -72,9 +103,10 @@ class AiEngineProviderTest {
     }
 
     @Test
-    fun `aicore and cloud both unavailable yields Unavailable with cloud reason`() = runTest {
+    fun `all three engines unavailable yields Unavailable with cloud reason`() = runTest {
         val provider = AiEngineProvider(
             aicore = aicore(available = false),
+            mediapipe = mediapipe(available = false),
             cloud = cloud(available = false, reason = UnavailableReason.ApiKeyMissing),
             externalScope = TestScope(UnconfinedTestDispatcher(testScheduler)),
         )
@@ -89,6 +121,7 @@ class AiEngineProviderTest {
     fun `cloud reason propagates for NetworkUnreachable`() = runTest {
         val provider = AiEngineProvider(
             aicore = aicore(available = false),
+            mediapipe = mediapipe(available = false),
             cloud = cloud(available = false, reason = UnavailableReason.NetworkUnreachable),
             externalScope = TestScope(UnconfinedTestDispatcher(testScheduler)),
         )
@@ -112,6 +145,7 @@ class AiEngineProviderTest {
         }
         val provider = AiEngineProvider(
             aicore = slow,
+            mediapipe = mediapipe(),
             cloud = cloud(available = true),
             externalScope = TestScope(StandardTestDispatcher(testScheduler)),
         )
@@ -124,12 +158,14 @@ class AiEngineProviderTest {
         val cloudEngine = mockk<CloudGeminiEngine>(relaxed = false).also {
             every { it.id } returns "cloud-gemini"
             coEvery { it.isAvailable() } returns true
+            every { it.lastUnavailableReason } returns null
             every { it.stream(any(), any()) } returns flow<String> {
                 throw IllegalStateException("upstream 503")
             }
         }
         val provider = AiEngineProvider(
             aicore = aicore(available = false),
+            mediapipe = mediapipe(available = false),
             cloud = cloudEngine,
             externalScope = TestScope(UnconfinedTestDispatcher(testScheduler)),
         )
@@ -160,6 +196,7 @@ class AiEngineProviderTest {
         val cloudEngine = mockk<CloudGeminiEngine>(relaxed = false).also {
             every { it.id } returns "cloud-gemini"
             coEvery { it.isAvailable() } returns true
+            every { it.lastUnavailableReason } returns null
             every { it.stream(any(), any()) } answers {
                 if (throwOnce) {
                     throwOnce = false
@@ -171,6 +208,7 @@ class AiEngineProviderTest {
         }
         val provider = AiEngineProvider(
             aicore = aicore(available = false),
+            mediapipe = mediapipe(available = false),
             cloud = cloudEngine,
             externalScope = TestScope(UnconfinedTestDispatcher(testScheduler)),
         )

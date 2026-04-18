@@ -57,7 +57,7 @@ class AiCoreEngine(
         // Unconditionally transition to Ready on a successful probe. `compareAndSet`
         // from Initializing would leave a prior Error/Unavailable sticky across
         // retry() calls, defeating explicit user-triggered recovery.
-        _status.value = AiModelStatus.Ready(AiEngineMode.OnDevice)
+        _status.value = AiModelStatus.Ready(AiEngineMode.OnDeviceAiCore)
         true
     }.getOrElse { t ->
         // Timeout or any other failure -> unavailable; caller can retry explicitly.
@@ -124,7 +124,7 @@ class AiCoreEngine(
                 _status.value = AiModelStatus.Error(reason = failureStatus)
             }
             override fun onDownloadCompleted() {
-                _status.value = AiModelStatus.Ready(AiEngineMode.OnDevice)
+                _status.value = AiModelStatus.Ready(AiEngineMode.OnDeviceAiCore)
             }
         }
         return GenerativeModel(
