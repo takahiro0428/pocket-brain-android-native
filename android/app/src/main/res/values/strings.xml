@@ -31,6 +31,7 @@
     <string name="unavailable_reason_api_key_missing">APIキーが設定されていません。アプリの配信元に連絡してください。</string>
     <string name="unavailable_reason_api_key_malformed">APIキーの形式が不正です。配信元に再ビルドを依頼してください。</string>
     <string name="unavailable_reason_api_key_rejected">APIキーが無効または権限不足です。期限切れや revoke の可能性があります。</string>
+    <string name="unavailable_reason_model_not_found">利用中のAIモデルが廃止されています。アプリの更新版をお待ちください。</string>
     <string name="unavailable_reason_network">ネットワークに接続できません。Wi-Fi / モバイルデータをご確認ください。</string>
     <string name="unavailable_reason_timeout">AIサーバーの応答が遅延しています。時間をおいて再試行してください。</string>
     <string name="action_retry_full">再検出して再試行</string>

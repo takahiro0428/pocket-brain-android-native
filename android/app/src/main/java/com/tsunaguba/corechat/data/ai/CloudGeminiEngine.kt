@@ -100,6 +100,10 @@ class CloudGeminiEngine(
         // don't false-positive into ApiKeyRejected. The `in` + Regex approach avoids
         // the naive `contains("401")` substring trap flagged in code review.
         val msg = t.message.orEmpty()
+        // Model retirement — Gemini 1.x was shut down and returns 404 NOT_FOUND.
+        // Detecting this early lets the UI tell the user "モデルが廃止" instead of
+        // the generic Unknown that costs a Logcat round-trip to diagnose.
+        if (MODEL_NOT_FOUND_REGEX.containsMatchIn(msg)) return UnavailableReason.ModelNotFound
         if (HTTP_AUTH_CODE_REGEX.containsMatchIn(msg)) return UnavailableReason.ApiKeyRejected
         if (AUTH_KEYWORD_REGEX.containsMatchIn(msg)) return UnavailableReason.ApiKeyRejected
 
@@ -129,7 +133,12 @@ class CloudGeminiEngine(
     }
 
     companion object {
-        const val DEFAULT_MODEL = "gemini-1.5-flash"
+        // gemini-1.5-flash was shut down by Google in 2025 and now returns
+        // 404 NOT_FOUND from the v1beta endpoint. 2.5 Flash is the current stable
+        // replacement (see https://ai.google.dev/gemini-api/docs/deprecations).
+        // If this ever goes the same way, `classify()` now tags the failure as
+        // ModelNotFound instead of Unknown so the UI surfaces the real cause.
+        const val DEFAULT_MODEL = "gemini-2.5-flash"
         private const val TAG = "CloudGeminiEngine"
 
         /**
@@ -141,6 +150,16 @@ class CloudGeminiEngine(
 
         /** HTTP auth codes at word boundaries. Guards against "request id 4018…" etc. */
         private val HTTP_AUTH_CODE_REGEX = Regex("""\b(401|403)\b""")
+
+        /**
+         * Matches the server-side 404 response shape for a retired model
+         * ("models/X is not found for API version v1beta…"). We use Regex rather
+         * than substring matching so a stray word like "found" in some other
+         * error doesn't spuriously trigger the ModelNotFound reason.
+         */
+        private val MODEL_NOT_FOUND_REGEX = Regex(
+            """(?i)(\bNOT_FOUND\b|\bis not found\b|\bListModels\b|\bmodel\s+not\s+found\b)""",
+        )
 
         /**
          * Phrases that strongly imply an authentication/authorization failure rather

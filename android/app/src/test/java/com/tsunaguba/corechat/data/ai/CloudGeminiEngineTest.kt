@@ -95,4 +95,32 @@ class CloudGeminiEngineTest {
         assertFalse(engine.isAvailable())
         assertEquals(UnavailableReason.Unknown, engine.lastUnavailableReason)
     }
+
+    @Test
+    fun `404 NOT_FOUND response yields ModelNotFound reason`() = runTest {
+        // Simulates the actual payload Google's server returns when a retired
+        // model (e.g. gemini-1.5-flash post-2025-shutdown) is requested.
+        val engine = CloudGeminiEngine(
+            apiKey = validLengthKey,
+            probe = {
+                throw IllegalStateException(
+                    """Unexpected Response: { "error": { "code": 404, """ +
+                        """"status": "NOT_FOUND", "message": "models/gemini-x is not found """ +
+                        """for API version v1beta. Call ListModels to see the list..." } }""",
+                )
+            },
+        )
+        assertFalse(engine.isAvailable())
+        assertEquals(UnavailableReason.ModelNotFound, engine.lastUnavailableReason)
+    }
+
+    @Test
+    fun `model not found phrase alone yields ModelNotFound reason`() = runTest {
+        val engine = CloudGeminiEngine(
+            apiKey = validLengthKey,
+            probe = { throw IllegalStateException("Model not found: gemini-x") },
+        )
+        assertFalse(engine.isAvailable())
+        assertEquals(UnavailableReason.ModelNotFound, engine.lastUnavailableReason)
+    }
 }

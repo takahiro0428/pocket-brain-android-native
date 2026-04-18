@@ -20,6 +20,8 @@ enum class UnavailableReason {
     ApiKeyMalformed,
     /** Key present but the cloud probe returned 401/403 / PermissionDenied. */
     ApiKeyRejected,
+    /** Model ID returned 404 NOT_FOUND — the model was retired by Google. */
+    ModelNotFound,
     /** countTokens did not complete within CLOUD_PROBE_TIMEOUT_MS. */
     ProbeTimeout,
     /** UnknownHost / SSL / socket timeout — device can't reach the API. */
